@@ -1,0 +1,31 @@
+select * from bt_request WHERE request_description = 'Django Test' and request_data_hash = '-4088942050780274268';
+insert into bt_request 
+(request_description, bbg_program_code, bbg_interface_code, bt_requestor_code, 
+response_format_code, bt_status_code, request_date, status_date, retry_count, requestor_login, request_data_hash, ROW_INSERT_BY, ROW_INSERT_DATE,
+ROW_UPDATE_BY,
+ROW_UPDATE_DATE, REQUEST_OBJECT_DATA)
+values('Django Test', 'GETDATA', 'DL', 'BT.DEV', 'HORIZONTAL', 'INITIAL','23-MAR-18 03.06.11.000000000 PM', '23-MAR-18 03.06.11.000000000 PM',
+0 , 'PIMCO\pachimat', '-4088942050780274268', 'svc_etl', '26-MAR-18 11.46.29.000000000 AM', 'svc_etl', '26-MAR-18 11.54.29.000000000 AM' ,'{
+	"requestor_code": "BT.DEV",
+	"request_description": "OPT_SPACE_LOW",
+	"program_code": "GETDATA",
+	"interface_code": "DL",
+	"response_format_code": "HORIZONTAL",
+	"request_data_items": [
+{"bbg_query": "DUM8 Comdty"}
+	],
+	"request_options": [
+		{
+			"option_name": "USERNUMBER",
+			"option_value": "183888"
+		},
+		{
+			"option_name": "FIRMNAME",
+			"option_value": "pimco"
+		}
+	],
+	"request_fields": [
+		"NAME",
+		"PX_LAST"
+	]
+}');
