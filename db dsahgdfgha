@@ -1,0 +1,36 @@
+import cx_Oracle
+def dbcon():
+	CONN_INFO = {
+    'host': '',
+    'port':1521 ,
+    'user': 'da_own',
+    'psw': 'dev',
+    'service': ''
+    }
+	CONN_STR = '{user}/{psw}@{host}:{port}/{service}'.format(**CONN_INFO)
+	con = cx_Oracle.connect(CONN_STR)
+    cursor = con.cursor()
+    return cursor
+
+def getrequests():
+        viewquery = '''
+                 SELECT
+        
+                FROM
+        
+                WHERE
+        '''
+        result = dbcon().execute(viewquery).fetchall()
+        dbcon().close()
+        return result
+
+def queuerequests(result):
+        insert_query = "INSERT INTO bt_Request (request_description, bbg_program_code, bbg_interface_code, bt_requestor_code, response_format_code, bt_status_code, request_date, status_date, retry_count, requestor_login, request_data_hash, ROW_INSERT_BY, ROW_INSERT_DATE,ROW_UPDATE_BY,ROW_UPDATE_DATE) VALUES (:1, :2, :3, :4, :5,:6:7:8:9:10:11:12:13:14:15)"
+        dbcon().executemany(insert_query, result)
+        dbcon().close()
+        return result
+
+#result = getrequests()
+result=[('Django Test', 'GETDATA', 'DL', 'BT.DEV', 'HORIZONTAL', 'INITIAL','23-MAR-18 03.06.11.000000000 PM', '23-MAR-18 03.06.11.000000000 PM',
+0 , 'PIMCO\pachimat', '-4088942050780274268', 'svc_etl', '26-MAR-18 11.46.29.000000000 AM', 'svc_etl', '26-MAR-18 11.54.29.000000000 AM')]
+queuerequests(result)
