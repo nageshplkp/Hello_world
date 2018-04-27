@@ -1,0 +1,94 @@
+{
+	"requestor_code": "MyAssignedToken",
+	"request_description": "Just a sample request",
+	"program_code": "GETDATA",
+	"interface_code": "DL",
+	"response_format_code": "HORIZONTAL",
+	"request_data_items": [
+		{"isin": "US64966HQD51", "tag": "##My Isin Tag##"},
+		{"yellow_key": "IDX", "ticker": "MY_TICKER", "tag": ""My YKT Tag##"},
+		{"bbg_query": "BAIG0 Index", "tag": "##My bbg query tag##"},
+		{"bb_id": "US82620KAR41"},
+		{"cusip": "988191284"}
+	],
+	"request_options": [
+		{
+			"option_name": "USERNUMBER",
+			"option_value": "183888"
+		},
+		{
+			"option_name": "FIRMNAME",
+			"option_value": "pimco"
+		}
+	],
+	"request_fields": [
+		"NAME",
+		"PX_EVAL",
+		"PX_LAST"
+	]
+}
+
+
+
+{
+	"status": "SUCCESS",
+	"body": {
+		"is_error": false,
+		"status_date": "2018-03-01 14:59:32",
+		"request_id": 1021,
+		"progression_url": "http://ptpcore-webfarm4-dev:50000/workshop/service/da/bbg_transport/check_status/1021",
+		"request_status": "INITIAL",
+		"response_file_info": [],
+		"data_file_path": null
+	},
+  
+  
+  
+  
+  
+  "env": {
+			"wsgi.multiprocess": false,
+			"HTTP_MAX_FORWARDS": "10",
+			"HTTP_COOKIE": "csrftoken=f4Vc0QvsVEgBnhDHygcuW7ycJrIALKny; sessionid=dfd93t6uufefi8ol7h6u2rupnf3s0vxh; ptp-python-mt-dev-50000-SF-cookie=R1686028331",
+			"HTTP_X_FORWARDED_HOST": "ptp-dev",
+			"HTTP_X_REMOTE_USER": "PIMCO\\landry",
+			"SCRIPT_NAME": "/workshop/service/da",
+			"HTTP_X_REWRITE_URL": "/workshop/service/da/bbg_transport/request_data",
+			"REQUEST_METHOD": "POST",
+			"PATH_INFO": "/bbg_transport/request_data",
+			"HTTP_ORIGIN": "http://ptp-dev",
+			"SERVER_PROTOCOL": "HTTP/1.1",
+			"QUERY_STRING": "",
+			"CONTENT_LENGTH": "433",
+			"HTTP_X_FORWARD": "144.77.69.90",
+			"HTTP_USER_AGENT": "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.140 Safari/537.36",
+			"HTTP_CONNECTION": "Keep-Alive",
+			"HTTP_REFERER": "http://ptp-dev/workshop/service/da/bbg_transport/",
+			"SERVER_NAME": "*.pimco.imswest.sscims.com",
+			"REMOTE_ADDR": "144.77.46.1",
+			"wsgi.url_scheme": "http",
+			"uwsgi.core": 0,
+			"SERVER_PORT": "50000",
+			"HTTP_X_CLIENT_IP_APPTIER": "172.21.50.122",
+			"uwsgi.node": "devpmwsv15",
+			"DOCUMENT_ROOT": "/appl/coreservicebeta/pypimco.web/nginx/1.8.0//html",
+			"HTTP_X_CLIENT_IP_PROXYTIER": "172.21.50.122",
+			"HTTP_CONTENT_LENGTH": "433",
+			"HTTP_X_ORIGINAL_URL": "/workshop/service/da/bbg_transport/request_data",
+			"HTTP_X_FORWARDED_BY": "PIMCO IIS TIER",
+			"HTTP_HOST": "ptpcore-webfarm4-dev:50000",
+			"wsgi.multithread": true,
+			"HTTP_CONTENT_TYPE": "application/json",
+			"REQUEST_URI": "/workshop/service/da/bbg_transport/request_data",
+			"HTTP_ACCEPT": "*/*",
+			"HTTP_X_LB_IP": "144.77.46.4:54702",
+			"wsgi.run_once": false,
+			"REMOTE_PORT": "32501",
+			"HTTP_ACCEPT_LANGUAGE": "en-US,en;q=0.9",
+			"uwsgi.version": "2.0.15",
+			"HTTP_X_ARR_LOG_ID": "93989393-3224-4a89-9127-be31f380ec25",
+			"CONTENT_TYPE": "application/json",
+			"HTTP_ACCEPT_ENCODING": "gzip, deflate"
+		}
+    
+}
