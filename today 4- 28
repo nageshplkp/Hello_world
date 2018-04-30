@@ -61,3 +61,68 @@ for i in result:
     obj = getrequestobject(i, result_series)
     print obj
 # queuerequests(result)
+import cx_Oracle
+import requests
+
+
+def dbcon():
+    CONN_INFO = {
+        'host': 'oradevpim-db',
+        'port': 1521,
+        'user': 'da_own',
+        'psw': 'dev',
+        'service': 'dv03pimi_cfport_con'
+    }
+    CONN_STR = '{user}/{psw}@{host}:{port}/{service}'.format(**CONN_INFO)
+    con = cx_Oracle.connect(CONN_STR)
+    cursor = con.cursor()
+    return cursor
+
+
+def getrequests():
+    viewquery = ''' SELECT  FROM pm_own.pl_bbg_batch_vw '''
+    result = dbcon().execute(viewquery).fetchall()
+    dbcon().close()
+    return result
+
+
+def queuerequests(result):
+    insert_query = "INSERT INTO pm_own.pl_bbg_batch (request_description, bbg_program_code, bbg_interface_code, bt_requestor_code, response_format_code, bt_status_code, request_date, status_date, retry_count, requestor_login, request_data_hash, ROW_INSERT_BY, ROW_INSERT_DATE,ROW_UPDATE_BY,ROW_UPDATE_DATE) VALUES (:1, :2, :3, :4, :5,:6:7:8:9:10:11:12:13:14:15)"
+    dbcon().executemany(insert_query, result)
+    dbcon().close()
+    return result
+
+
+def getrequestobject(objdata, result_series):
+    obj = {}
+    obj['requestor_code'] = 'Lohith '    #objdata[0]
+    obj["request_description"] = 'dsdasd'  #objdata[1]
+    obj["program_code"] = objdata[1]
+    obj["interface_code"] = objdata[2]
+    obj["response_format_code"] = 'horizontal'    #objdata[4]
+    items_list = []
+    request_fields_list = []
+    for i in result_series:
+        yellow_keys = {}
+        yellow_keys['ticker'] = i[4]
+        yellow_keys['tag'] = i[3]
+        yellow_keys['yellow_key'] = i[5]
+        items_list.append(yellow_keys)
+        request_fields_list.append(i[6])
+    obj['request_data_items'] = items_list
+    obj['request_fields'] = request_fields_list
+    return obj
+
+def updaterequest(batch_id,request_id,status):
+    dbcon().execute('''UPDATE pm_own.pl_bbg_batch SET request_id = ?,status=? WHERE batch_id = ?''', (batch_id,request_id,status))
+
+if _name_ == '__main__':
+    result = getrequests()
+    for i in result:
+        seriesquery = "select  from pm_own.pl_bbg_batch_series_vw where batch_id =" + str(i[0])
+        result_series = dbcon().execute(seriesquery).fetchall()
+        obj = getrequestobject(i, result_series)
+        print obj
+
+        updaterequest(i[0],response.request_id,2)
+    # queuerequests(result)
