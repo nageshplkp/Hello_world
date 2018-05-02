@@ -1,0 +1,143 @@
+
+import cx_Oracle
+import requests
+import getpass
+import logging
+import traceback
+from collections import defaultdict, namedtuple
+from datetime import datetime
+
+import arrow
+import six
+from dateutil.tz import tzlocal
+from gevent import monkey
+from gevent.pool import Pool
+
+import core.services.timeseries.classes.com.pimco.dataservices.timeseries as ts
+import etl
+from core.db.sql_db import SqlDb
+from core.rest.client import JSON_SERIALIZER_DW_ENC
+from core.services.timeseries.ts_proxy import TsProxy
+from etl.core.da_config import get_env
+from etl.core.db import get_db_creds
+from etl.core.util import parse_args
+from etl.core.util_env import get_cdc_info
+from etl.repo.pim_da.dats_series_tss_meta import DatsSeriesTssMetaRepo
+from etl.repo.pim_da.dats_series_tss_reg import DatsSeriesTssRegRepo
+from etl.repo.pim_da.vtss_dats_series_reg import VtssDatsSeriesRegRepo
+
+
+def get_tss_base_url():
+
+    # for testing purposes, lets stick to the same server. When committing, comment out the below line
+    # return 'http://devpmwsv7:61000/timeseries/v1'
+
+    return get_env()
+
+class QueuerAgent:
+
+    def dbcon():
+        CONN_INFO = {
+            'host': 'oradevpim-db',
+            'port': 1521,
+            'user': 'da_own',
+            'psw': 'dev',
+            'service': 'dv03pimi_cfport_con'
+        }
+        CONN_STR = '{user}/{psw}@{host}:{port}/{service}'.format(**CONN_INFO)
+        con = cx_Oracle.connect(CONN_STR)
+        #cursor = con.cursor()
+        return con
+
+    def _init__(self):
+        logging.info('QueuerAgent')
+        repo = etl.repo.OraPimRepo()
+        cred = get_db_creds(_repo.server, repo.vendor)
+        self.cdc = get_cdc_info()
+        self.sql_db = SqlDb(_cred.server, cred.vendor, user=_cred.get('user'), password=_cred.get('passwd'))
+        self.ts_proxy = TsProxy(base_url=_get_tss_base_url())
+        self.USERNAME = getpass.getuser()
+        monkey.patch_socket()
+
+    def getrequests():
+        viewquery = ''' SELECT  FROM pm_own.pl_bbg_batch_vw '''
+        result = dbcon().cursor().execute(viewquery).fetchall()
+        dbcon().close()
+        return result
+
+
+    def queuerequests(result):
+        insert_query = "INSERT INTO pm_own.pl_bbg_batch (request_description, bbg_program_code, bbg_interface_code, bt_requestor_code, response_format_code, bt_status_code, request_date, status_date, retry_count, requestor_login, request_data_hash, ROW_INSERT_BY, ROW_INSERT_DATE,ROW_UPDATE_BY,ROW_UPDATE_DATE) VALUES (:1, :2, :3, :4, :5,:6:7:8:9:10:11:12:13:14:15)"
+        dbcon().cursor().executemany(insert_query, result)
+        dbcon().commit()
+        dbcon().close()
+
+        return result
+
+
+
+    def getrequestobject(objdata, result_series):
+        obj = dict()
+        obj['requestor_code'] = 'BT.DEV'    #objdata[0]
+        obj["request_description"] = 'TEST'  #objdata[1]
+        obj["program_code"] = objdata[1]
+        obj["interface_code"] = objdata[2]
+        obj["response_format_code"] = 'HORIZONTAL'    #objdata[4]
+        items_list = []
+        request_fields_list = []
+        for i in result_series:
+            element = dict()
+            element['yellow_key'] = i[5]
+            element['ticker'] = i[4]
+            element['tag'] = i[3]
+            items_list.append(element)
+            request_fields_list.append(i[6])
+        obj['request_data_items'] = items_list
+        obj['request_fields'] = request_fields_list
+        return obj
+
+
+    def update_request(batch_id, bt_request_id, status_code):
+        updatequery = "UPDATE pm_own.pl_bbg_batch SET bt_request_id =:a ,status_code= :b WHERE batch_id = :c "
+
+        # dbcon().cursor().execute('''UPDATE pm_own.pl_bbg_batch SET bt_request_id = %s, status_code=%s WHERE batch_id = %s'''
+        #                 %(batch_id, bt_request_id, status_code))
+        dbcon().cursor().execute(updatequery, {'a': bt_request_id, 'b': status_code, 'c': batch_id})
+        dbcon().commit()
+        dbcon().close()
+
+    def run()
+        result = getrequests()
+        for i in result:
+            seriesquery = "select  from pm_own.pl_bbg_batch_series_vw where batch_id =" + str(i[0])
+            result_series = dbcon().cursor().execute(seriesquery).fetchall()
+            dbcon().close()
+            obj = getrequestobject(i, result_series)
+            print obj
+            response = {
+                "status": "SUCCESS",
+                "body": {
+                    "is_error": False,
+                    "status_date": "2018-03-01 14:59:32",
+                    "request_id": 1021,
+                    "progression_url": "http://ptpcore-webfarm4-dev:50000/workshop/service/da/bbg_transport/check_status/1021",
+                    "request_status": "INITIAL",
+                    "response_file_info": [],
+                    "data_file_path": "null"
+                }
+            }
+
+    # response = requests.post('http://ptp-dev/workshop/service/da/bbg_transport/request_data/', data=obj)
+    # update_request(i[0], response.request_id, 2)
+    # print(i[0])
+    # print response['body']['request_id']
+
+            update_request(i[0], response['body']['request_id'], 2)
+             # queuerequests(result)
+
+if _name_ == '__main__':
+        agent = QueuerAgent()
+        agent.run()
+
+
+   
