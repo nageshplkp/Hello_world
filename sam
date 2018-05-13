@@ -54,13 +54,13 @@ class QueuerAgent:
             request_fields_list.append(i.bbg_mnemonic)
         payload["request_data_items"] = items_list
         payload["request_fields"] = list(set(request_fields_list))
-        req_options=[]
-        req_options_item=dict()
+        req_options = []
+        req_options_item = dict()
         req_options_item["option_name"]='DATERANGE'
         if objdata.bbg_program_code == 'GETDATA':
-            req_options_item["option_name"] = time.strftime('%Y%m%d')
+            req_options_item["option_value"] = objdata.asof_end_date_key #time.strftime('%Y%m%d')
         elif objdata.bbg_program_code == 'GETHISTORY':
-            req_options_item["option_name"] = objdata.start_date + "|" + objdata.end_date
+            req_options_item["option_value"] = objdata.asof_start_date_key + "|" + objdata.asof_end_date_key
         else:
             pass
         payload["request_options"] = req_options
@@ -79,22 +79,22 @@ class QueuerAgent:
         update_row[0].bt_request_id = bt_request_id
         update_row[0].bt_status_code = bt_status_code
         update_row[0].bt_request_payload = request_obj
-        update_row[0].data_file_path = progression_url
+        update_row[0].bt_response_file_path = progression_url
         repo.save(update_row)
 
     def run(self):
         result = self.getrequests(PlBbgBatchRepo())
-        priority_list= self.getprioritylist(result)
+        priority_list = self.getprioritylist(result)
         for i in priority_list:
             repo = PlBbgBatchSeriesVwRepo()
             model = repo.model
             result_batch = repo.query.filter(model.batch_id == i.batch_id).all()
             obj = self.get_request_object(i, result_batch)
             response = self.post_to_bt(obj)
-            self.update_request(i.batch_id, response['request_id'],response['progression_url']
+            self.update_request(i.batch_id, response['request_id'], response['progression_url'],
                                    str(response['request_status']), str(obj), 'SENT_TO_BT', PlBbgBatchRepo())
 
 
-if _name_ == '__main__':
+if __name__ == '__main__':
     agent = QueuerAgent()
     agent.run()
