@@ -1,0 +1,50 @@
+{
+    "_config": null,
+    "request_options": [
+        {
+            "option_name": "OUTPUTFORMAT",
+            "option_value": "bulklist"
+        },
+        {
+            "option_name": "FIRMNAME",
+            "option_value": "pimco"
+        },
+        {
+            "option_name": "PROGRAMNAME",
+            "option_value": "GETDATA"
+        },
+        {
+            "option_name": "PROGRAMFLAG",
+            "option_value": "one-shot"
+        },
+        {
+            "option_name": "COMPRESS",
+            "option_value": "yes"
+        },
+        {
+            "option_name": "USERNUMBER",
+            "option_value": "183888"
+        }
+    ],
+    "_validation_errors": null,
+    "request_description": "Get data",
+    "request_data_items": [
+        {
+            "cusip": null,
+            "yellow_key": null,
+            "bb_id": null,
+            "tag": null,
+            "isin": null,
+            "bbg_query": "DJTTR Index",
+            "ticker": null
+        }
+    ],
+    "program_code": "GETDATA",
+    "requestor_code": "DA.INDEX_SOLUTIONS.DEV",
+    "request_fields": [
+        "INDX_MWEIGHT"
+    ],
+    "interface_code": "DL",
+    "callback_uri": null,
+    "response_format_code": "HORIZONTAL"
+}
