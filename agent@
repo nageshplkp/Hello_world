@@ -1,0 +1,49 @@
+import getpass
+import logging
+
+from etl.core.util import uri_get
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+BT_ERROR_STATUS = ['BBGERROR', 'BTERROR']
+class FetcherAgent:
+    def __init__(self):
+        logging.info('FetcherAgent')
+        self.USERNAME = getpass.getuser()
+
+    @staticmethod
+    def get_requests(repo):
+        model = repo.model
+        data = repo.query.filter(model.batch_status_code == 'SENT_TO_BT').all()
+        return data
+
+    # @staticmethod
+    # def get_request_status_by_url(self):
+    #     response = uri_get(obj.bt_response_file_path)
+    #     return response
+
+    @staticmethod
+    def update_request(batch_id, data_file_path, bt_status_code, batch_status_code, repo):
+        model = repo.model
+        #update_row = repo.query.filter(model.bt_request_id == bt_request_id, model.batch_id == batch_id).all()
+        update_row = repo.query.filter(model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = batch_status_code
+        update_row[0].bt_status_code = bt_status_code
+        update_row[0].bt_response_file_path = data_file_path
+        repo.save(update_row)
+
+    def run(self):
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            response = uri_get(i.bt_response_file_path)
+            if response['request_status'] in BT_ERROR_STATUS:
+                self.update_request(i.batch_id, response['data_file_path'],
+                                    response['request_status'], response['request_status'], PlBbgBatchRepo())
+            else:
+                self.update_request(i.batch_id, response['data_file_path'],
+                                    response['request_status'], 'BT_DONE', PlBbgBatchRepo())
+
+
+
+if __name__ == '__main__':
+    agent = FetcherAgent()
+    agent.run()
