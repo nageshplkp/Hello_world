@@ -4,7 +4,7 @@
 
 import getpass
 import logging
-
+import shutil
 import ssh
 from sqlalchemy import or_
 from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
@@ -56,13 +56,18 @@ class LoaderAgent(object):
         :param data_path:
         :return:
         """
+        # try:
+        # 
+        #     server = ssh(host='devpmetlv1.pimco.imswest.sscims.com', 
+        #                  username='pachimat', private_key='/home/pachimat/.ssh/id_rsa')
+        #     result = server.execute('cp {0} {1}'.format(data_path, DESTINATION))
+        #     
+        #     print (result)
+        #     return result
+        
         try:
-
-            # server = ssh(host='devpmetlv1.pimco.imswest.sscims.com', username='pachimat', private_key='/home/pachimat/.ssh/id_rsa')
-            # result = server.execute('cp {0} {1}'.format(data_path, DESTINATION))
-            
-            print (result)
-            return result
+            shutil.copy(data_path, DESTINATION)
+            return True
         except:
             print("Unble to download the file.")
             return False
