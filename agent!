@@ -12,6 +12,7 @@ from etl.repo.pim_pm.pl_bbg_batch_series_vw import PlBbgBatchSeriesVwRepo
 BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
 
 
+
 class QueuerAgent(object):
     """
 
@@ -114,14 +115,13 @@ class QueuerAgent(object):
         return response
 
     @staticmethod
-    def update_request(batch_id, bt_request_id, progression_url,
-                       bt_status_code, request_obj, batch_status_code, repo):
+    def update_request(batch_id, bt_request_id, bt_status_code,
+                       request_obj, batch_status_code, repo):
 
         """
 
         :param batch_id:
         :param bt_request_id:
-        :param progression_url:
         :param bt_status_code:
         :param request_obj:
         :param batch_status_code:
@@ -135,7 +135,6 @@ class QueuerAgent(object):
         update_row[0].bt_request_id = bt_request_id
         update_row[0].bt_status_code = bt_status_code
         update_row[0].bt_request_payload = request_obj
-        update_row[0].bt_response_file_path = progression_url
         repo.save(update_row)
 
     def run(self):
@@ -152,7 +151,7 @@ class QueuerAgent(object):
             obj = self.get_request_object(i, result_batch)
             print obj
             response = self.post_to_bt(obj)
-            self.update_request(i.batch_id, response['request_id'], response['progression_url'],
+            self.update_request(i.batch_id, response['request_id'],
                                 str(response['request_status']),
                                 str(obj), 'SENT_TO_BT', PlBbgBatchRepo())
 
