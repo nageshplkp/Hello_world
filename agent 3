@@ -1,0 +1,48 @@
+import getpass
+import logging
+import shutil
+from sqlalchemy import and_
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+DESTINATION = '/appl/da_dev/da_data/ff_pl'
+
+
+class LoaderAgent:
+
+    def __init__(self):
+        logging.info('LoaderAgent')
+        self.USERNAME = getpass.getuser()
+
+    @staticmethod
+    def get_requests(repo):
+        model = repo.model
+        #data = repo.query.filter(model.batch_status_code == 'SUCCESS').all()
+        data = repo.query.filter(
+            and_(model.batch_status_code == 'SENT_TO_BT',  model.batch_status_code == 'SUCCESS')).all()
+        return data
+
+    @staticmethod
+    def update_request(batch_id, status_code, repo):
+        model = repo.model
+        update_row = repo.query.filter(model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = status_code
+        repo.save(update_row)
+
+    @staticmethod
+    def load_csv(data_path):
+        try:
+            shutil.copy(data_path, DESTINATION)
+        except:
+            pass
+        return True
+
+    def run(self):
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            if self.load_csv(i.bt_response_file_path):
+                self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
+
+
+if __name__ == '__main__':
+    agent = LoaderAgent()
+    agent.run()
