@@ -60,7 +60,7 @@ class QueuerAgent(object):
         payload["request_description"] = "TEST"
         payload["program_code"] = objdata.bbg_program_code
         payload["interface_code"] = objdata.bbg_interface_code
-        payload["response_format_code"] = "HORIZONTAL"
+        payload["response_format_code"] = "VERTICAL"
         items_list = []
         request_fields_list = []
         for i in result_series:
