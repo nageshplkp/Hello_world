@@ -1,23 +1,126 @@
+"""
+
+"""
+
+import getpass
+import logging
 import paramiko
+import shutil
+import ssh
+from sqlalchemy import or_
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+DESTINATION = '/appl/da_dev/da_data/ff_pl/in'
+BT_COMPLETE_STATUS = ['BBGERROR', 'BTERROR', 'SUCCESS']
 
 
-#setting parameters like host IP, username, passwd and number of iterations to gather cmds
-HOST = ""
-USER = ""
-PASS = ""
+HOST = "devpmetlv1.pimco.imswest.sscims.com"
+USER = "pachimat"
+PASS = "P!mple270591"
 
-#A function that logins and execute commands
-def copythefile():
-  client1=paramiko.SSHClient()
-  #Add missing client key
-  client1.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-  #connect to switch
-  client1.connect(HOST,username=USER,password=PASS)
-  print "SSH connection to %s established" %HOST
-  #Gather commands and read the output from stdout
-  stdin, stdout, stderr = client1.exec_command('cp file destination\n')
-  print stdout.read()
-  client1.close()
-  print "Logged out of device %s" %HOST
+class LoaderAgent(object):
+    """
 
-copythefile()
+    """
+
+    def __init__(self):
+        logging.info('LoaderAgent')
+        self.USERNAME = getpass.getuser()
+
+    def copythefile(self):
+        client1 = paramiko.SSHClient()
+        # Add missing client key
+        client1.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # connect to switch
+        client1.connect(HOST, username=USER, password=PASS)
+        print "SSH connection to %s established" % HOST
+        # Gather commands and read the output from stdout
+        stdin, stdout, stderr = client1.exec_command(
+            'cp /appl/da_dev/da_data/bbg_transport /in/ 20180516.4981.csv /appl/da_dev/da_data/ff_pl/in')
+        print stdout.read()
+        client1.close()
+        print "Logged out of device %s" % HOST
+
+    @staticmethod
+    def get_requests(repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        data = repo.query.filter(
+            or_(model.batch_status_code == 'SENT_TO_BT',
+                model.bt_status_code in BT_COMPLETE_STATUS)).all()
+        return data
+
+    @staticmethod
+    def update_request(batch_id, batch_status_code, repo):
+        """
+
+        :param batch_id:
+        :param batch_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        update_row = repo.query.filter(model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = batch_status_code
+        repo.save(update_row)
+
+
+
+        # setting parameters like host IP, username, passwd and number of iterations to gather cmds
+
+
+        # A function that logins and execute commands
+
+
+
+
+    # @staticmethod
+    # def load_csv(data_path):
+    #     """
+    #
+    #     :param data_path:
+    #     :return:
+    #     """
+    #     # try:
+    #
+    #     server = ssh.Connection(host='devpmetlv1.pimco.imswest.sscims.com',
+    #                  username='pachimat', private_key='/home/pachimat/.ssh/id_rsa')
+    #     result = server.execute('cp {0} {1}'.format(data_path, DESTINATION))
+    #
+    #     print (result)
+    #     return result
+    #     #/appl/da_dev/da_data/bbg_transport /in/ 20180516.4981.csv
+    #     # data_path = '/appl/da_dev/da_data/bbg_transport/in/20180516.4981.csv'
+    #     # shutil.copy(data_path, DESTINATION)
+    #     # try:
+    #     #     data_path = '/appl/da_dev/da_data/bbg_transport/in/20180516.4981.csv'
+    #     #     shutil.copy2(data_path, DESTINATION)
+    #     #     return True
+    #     # except ex:
+    #     #     print("Unble to download the file.")
+    #     #     return False
+
+    def run(self):
+        """
+
+        :return:
+        """
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            if i.bt_status_code == 'SUCCESS':
+                if self.copythefile():
+                    self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
+            elif i.bt_status_code == 'BBGERROR':
+                self.update_request(i.batch_id, 'BBG_ERROR', PlBbgBatchRepo())
+            elif i.bt_status_code == 'BTERROR':
+                self.update_request(i.batch_id, 'BT_ERROR', PlBbgBatchRepo())
+
+
+
+if __name__ == '__main__':
+    agent = LoaderAgent()
+    agent.run()
