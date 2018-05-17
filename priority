@@ -1,0 +1,180 @@
+"""
+The script basically generates the request_data_object and posts to BT.
+"""
+import json
+
+import getpass
+import logging
+from etl.core.util import uri_post
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+from etl.repo.pim_pm.pl_bbg_batch_series_vw import PlBbgBatchSeriesVwRepo
+
+BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+
+
+class QueuerAgent(object):
+    """
+
+    """
+
+    def _init__(self):
+        logging.info('QueuerAgent')
+        self.USERNAME = getpass.getuser()
+
+    def get_request(self,repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        data = repo.query.filter(model.batch_status_code == 'IN_QUEUE').all()
+        return data
+
+
+    def get_priority_list(self,result):
+        """
+
+        :param result:
+        :return:
+        """
+        plist = []
+        data_list =[]
+        history_list=[]
+        for i in result:
+            if i.bbg_program_code == 'GETDATA':
+                data_list.append(i)
+            else:
+                history_list.append(i)
+        data_list=self.get_priority_list_by_interface_code(data_list)
+        history_list = self.get_priority_list_by_interface_code(history_list)
+        plist=data_list+history_list
+        return plist
+
+    def get_priority_list_by_interface_code(self,result):
+        """
+
+        :param result:
+        :return:
+        """
+        plist = []
+        for i in result:
+            if i.bbg_interface_code == 'SAPI':
+                plist.insert(0, i)
+            else:
+                plist.append(i)
+        return plist
+
+
+    def get_request_object(self,objdata, result_series):
+        """
+
+        :param objdata:
+        :param result_series:
+        :return:
+        """
+        payload = dict()
+        payload["requestor_code"] = "DA.PIMCOLIVE.DEV"
+        payload["request_description"] = "TEST"
+        payload["program_code"] = objdata.bbg_program_code
+        payload["interface_code"] = objdata.bbg_interface_code
+        payload["response_format_code"] = "VERTICAL"
+        items_list = []
+        request_fields_list = []
+        for i in result_series:
+            element = dict()
+            element["cusip"] = ""
+            element["yellow_key"] = i.bbg_yellow
+            element["bb_id"] = ""
+            element["tag"] = i.pl_series_code
+            element["isin"] = ""
+            element["bbg_query"] = ""
+            element["ticker"] = i.bbg_ticker
+            items_list.append(element)
+            request_fields_list.append(i.bbg_mnemonic)
+        payload["request_data_items"] = items_list
+        payload["request_fields"] = list(set(request_fields_list))
+        req_options_item = dict()
+        req_options_item["option_name"] = "DATERANGE"
+        # if objdata.bbg_program_code == "GETDATA":
+        #     payload["request_options"] = []
+        #     # req_options_item["option_value"] = str(objdata.asof_end_date_key)
+        #     # time.strftime('%Y%m%d')
+        # elif objdata.bbg_program_code == "GETHISTORY":
+        #     req_options_item["option_value"] = str(objdata.asof_start_date_key) + \
+        #                                        "|" + str(objdata.asof_end_date_key)
+        #     req_options = list()
+        #     req_options.append(req_options_item)
+        #     payload["request_options"] = req_options
+        #     payload = json.dumps(payload)
+
+        if objdata.bbg_program_code == "GETDATA":
+            req_options_item["option_value"] = str(objdata.asof_end_date_key)
+
+        elif objdata.bbg_program_code == "GETHISTORY":
+            req_options_item["option_value"] = str(objdata.asof_start_date_key) + \
+                                               "|" + str(objdata.asof_end_date_key)
+
+        req_options = list()
+        req_options.append(req_options_item)
+        payload["request_options"] = req_options
+        payload = json.dumps(payload)
+        return payload
+
+
+    def post_to_bt(self,payload):
+        """
+
+        :param payload:
+        :return:
+        """
+        response = uri_post(BASE_URL + 'request_data', payload)
+        return response
+
+
+    def update_request(self,batch_id, bt_request_id, progression_url,
+                       bt_status_code, request_obj, batch_status_code, repo):
+
+        """
+
+        :param batch_id:
+        :param bt_request_id:
+        :param progression_url:
+        :param bt_status_code:
+        :param request_obj:
+        :param batch_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        update_row = repo.query.filter(model.batch_status_code == 'IN_QUEUE',
+                                       model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = batch_status_code
+        update_row[0].bt_request_id = bt_request_id
+        update_row[0].bt_status_code = bt_status_code
+        update_row[0].bt_request_payload = request_obj
+        update_row[0].bt_response_file_path = progression_url
+        repo.save(update_row)
+
+    def run(self):
+        """
+
+        :return:
+        """
+        result = self.get_request(PlBbgBatchRepo())
+        priority_list = self.get_priority_list(result)
+        for i in priority_list:
+            repo = PlBbgBatchSeriesVwRepo()
+            model = repo.model
+            result_batch = repo.query.filter(model.batch_id == i.batch_id).all()
+            obj = self.get_request_object(i, result_batch)
+            print obj
+            response = self.post_to_bt(obj)
+            self.update_request(i.batch_id, response['request_id'], response['progression_url'],
+                                str(response['request_status']),
+                                str(obj), 'SENT_TO_BT', PlBbgBatchRepo())
+
+
+if _name__ == '__main__':
+    agent = QueuerAgent()
+    agent.run()
