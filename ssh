@@ -1,0 +1,23 @@
+import paramiko
+
+
+#setting parameters like host IP, username, passwd and number of iterations to gather cmds
+HOST = ""
+USER = ""
+PASS = ""
+
+#A function that logins and execute commands
+def copythefile():
+  client1=paramiko.SSHClient()
+  #Add missing client key
+  client1.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+  #connect to switch
+  client1.connect(HOST,username=USER,password=PASS)
+  print "SSH connection to %s established" %HOST
+  #Gather commands and read the output from stdout
+  stdin, stdout, stderr = client1.exec_command('cp file destination\n')
+  print stdout.read()
+  client1.close()
+  print "Logged out of device %s" %HOST
+
+copythefile()
