@@ -1,0 +1,23 @@
+def download(self, source):
+        result = self.config_details()
+
+
+        host = result.KEY_BBG_FTP_HOST
+        port = result.KEY_BBG_FTP_PORT
+        uname = result.KEY_BBG_FTP_USER
+        mkey = paramiko.RSAKey.from_private_key_file(result.KEY_BBG_FTP_PASSWORD)
+
+
+        try:
+            self.ssh = paramiko.Transport(host, port)
+            self.ssh.set_keepalive(2)
+            self.ssh.connect(username=uname, pkey=mkey)
+            self.ssh_client = paramiko.SFTPClient.from_transport(self.ssh)
+        except Exception:
+            host = resut.KEY_BBG_FTP_HOST_2
+            self.ssh = paramiko.Transport(host, port)
+            self.ssh.set_keepalive(2)
+            self.ssh.connect(username=uname, pkey=mkey)
+            self.ssh_client = paramiko.SFTPClient.from_transport(self.ssh)
+            with open(source) as f:
+                self.ssh_client.putfo(f, target_path)
