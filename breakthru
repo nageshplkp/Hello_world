@@ -1,0 +1,141 @@
+"""
+
+"""
+
+import getpass
+import logging
+import os
+import paramiko
+from  shutil import copyfile
+import ssh
+from etl.bbg_transport.agent import BbgFtp
+from datetime import datetime
+from etl.bbg_transport.util import BbgConfig
+from etl.core import util
+from etl.core.db import ora_xxx
+from etl.repo.cor_da.bt_config import BtConfigRepo
+from sqlalchemy import or_
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+DESTINATION = '/appl/da_dev/da_data/ff_pl/in'
+BT_COMPLETE_STATUS = ['BBGERROR', 'BTERROR', 'SUCCESS']
+
+
+
+class LoaderAgent(object):
+    """
+
+    """
+
+    def __init__(self):
+        logging.info('LoaderAgent')
+        self.USERNAME = getpass.getuser()
+
+    def __enter__(self):
+        # make a database connection and return it
+        self.pm_own = ora_xxx('PM_OWN', 'ORAPIM_DBP')
+        # make a database connection and return it
+        self.da_own = ora_xxx('DA_OWN', 'ORACOR_DBP')
+
+        self.ctx = util.struct(pm_own=self.pm_own,
+                               da_own=self.da_own, **self.ctx)
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        if exc_type is None:
+            # No exception
+            pass
+
+        # make sure the db connection gets closed
+        # Release resources
+        try:
+            if self.pm_own is not None:
+                self.pm_own.release()
+
+            if self.da_own is not None:
+                self.da_own.release()
+        finally:
+            self.pm_own = None
+            self.da_own = None
+
+        # Release resources
+        if self.config is not None:
+            self.config = None
+
+        # Display auditing details
+        self.end_time = datetime.now()
+        elapsed_time = self.end_time - self.start_time
+        self.log.info("Overall time elapsed: %ss", elapsed_time)
+        self.log.info("Agent completed at %s", self.end_time)
+        self.log = None
+        # endregion
+
+    @staticmethod
+    def get_requests(repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        data = repo.query.filter(
+            or_(model.batch_status_code == 'SENT_TO_BT',
+                model.bt_status_code in BT_COMPLETE_STATUS)).all()
+        return data
+
+
+    @staticmethod
+    def update_request(batch_id, batch_status_code, repo):
+        """
+
+        :param batch_id:
+        :param batch_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        update_row = repo.query.filter(model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = batch_status_code
+        repo.save(update_row)
+
+    @staticmethod
+    def config_details():
+        repo = BtConfigRepo()
+        model =repo.model
+        data = repo.query.all()
+        return data
+
+
+
+
+    def download(self, source):
+        result = self.config_details()
+
+
+        host = self.config.data[BbgConfig.KEY_BBG_FTP_HOST]
+        # port = int(self.config.data[BbgConfig.KEY_BBG_FTP_PORT])
+        # uname = self.config.data[BbgConfig.KEY_BBG_FTP_USER]
+        # mkey = paramiko.RSAKey.from_private_key_file(self.config.data[BbgConfig.KEY_BBG_FTP_PASSWORD])
+
+
+    def run(self):
+        """
+
+        :return:
+        """
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            if i.bt_status_code == 'SUCCESS':
+                if self.download(i.bt_response_file_path.strip()):
+                    self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
+            elif i.bt_status_code == 'BBGERROR':
+                self.update_request(i.batch_id, 'BBG_ERROR', PlBbgBatchRepo())
+            elif i.bt_status_code == 'BTERROR':
+                self.update_request(i.batch_id, 'BT_ERROR', PlBbgBatchRepo())
+
+
+if __name__ == '__main__':
+    agent = LoaderAgent()
+    agent.run()
