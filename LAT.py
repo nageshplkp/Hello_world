@@ -1,0 +1,401 @@
+"""
+The script basically generates the request_data_object and posts to BT.
+"""
+import copy
+import getpass
+import logging
+import os
+import sys
+from datetime import datetime
+
+from sqlalchemy.exc import DBAPIError
+
+from etl.bbg_transport.dto import RequestDataItem, RequestItem, RequestOptionItem
+from etl.core import da_config
+from etl.core import util
+from etl.core.db import ora_xxx
+from etl.core.util import uri_post, sanitize_cmd_line
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+from etl.repo.pim_pm.pl_bbg_batch_series_vw import PlBbgBatchSeriesVwRepo
+
+__app__ = sys.modules['__main__']
+
+BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+
+USAGE = [
+    'QUEUER agent',
+    # [['-l', '--log-level', '--log_level'],
+    #     {'help': 'DEBUG, INFO, WARN, ERROR, CRITICAL',
+    #      'choices': ['DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL']}],
+    # [['-e', '--etl-audit-id', '--etl_audit_id'],
+    #     {'help': 'Etl audit id for etl jobs max-len(10)', 'type': int}],
+    # # [['-o', '--outfile'],
+    # #     {'help': 'Etl output file name', 'required': True}],
+    # [['-v', '--vertical'],
+    #     {'help': 'Etl output file format(VERTICAL if specified), '
+    #      'works ONLY with single level non bulk requests',
+    #      'action': 'store_true', 'default': False}],
+    # # [['-c', '--requestor-code', '--requestor_code'],
+    # #     {'help': 'User token for bt API calls', 'required': True}],
+    # [['-s', '--source-code', '--source_code'],
+    #     {'help': 'Etl source code for etl source', 'required': True}],
+    # # [['-b', '--use-bt-output-file', '--use_bt_output_file'],
+    # #  {'help': 'Use bt output file, without modification, works ONLY for single'
+    # #   'level requests',  'action': 'store_true', 'default': False}]
+
+]
+
+class QueuerAgent(object):
+    """
+
+    """
+
+    def __init__(self, logger=None, options=None):
+        self.log = logger or logging.getLogger("{}".format(
+            os.path.splitext(os.path.basename(__file__))[0]))
+        self.USERNAME = getpass.getuser()
+
+        try:
+
+            self.start_time = datetime.now()
+            self.end_time = None
+            # cfg_section = self.config.get('dais_bbg_trasnport')
+            # self.base_url = cfg_section.get('base_url')
+            self.base_url = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+            # os.environ['DA_CONFIG_DIR'] = 'C:\\Data\\ETL\\batch\\branches\\dev\\config'
+            self.options = copy.deepcopy(
+                vars(options) if options is not None else dict())
+            self.default_config = da_config.get_etl_cfg()
+            self.config = copy.deepcopy(self.default_config)
+            self.config.update(self.options)
+
+            level_name = self.config.get('log_level')
+            if not level_name:
+                level_name = self.config.get('dais').get('log_level', 'INFO')
+
+            level = logging.getLevelName(level_name)
+            os.environ['PYPIMCO_LOG_LEVEL_OVERRIDE'] = level_name
+            from core.log import log_config
+            log_config.init_logging(None, True)
+            self.log.setLevel(level)
+
+            formatter = logging.Formatter(
+                '%(asctime)s %(threadName)s:%(thread)d %(name)s %(levelname)s %(message)s')
+
+            logger = logging.getLogger('')
+            for handler in logger.handlers:
+                handler.setFormatter(formatter)
+
+            # Try command line argument first --audit-id
+            self.etl_audit_id = self.options.get('etl_audit_id')
+            self.log.info("ETL_AUDIT_ID: %s", self.etl_audit_id)
+
+            # Try command line argument first --audit-id
+            self.etl_source_code = self.options.get('source_code')
+
+            # Use environment variable param if command line
+            # for etl source code is not set
+            if self.etl_source_code is None:
+                # Capture etl source code. Created by etl wrapper script
+                # and saved to the ETL_SOURCE_CODE environment variable
+                self.etl_source_code = os.environ.get('ETL_SOURCE_CODE')
+
+            self.outfile = self.options.get('outfile')
+
+            self.requestor_code = self.options.get('requestor_code')
+            self.vertical = self.options.get('vertical')
+
+            self.use_bt_output_file = self.options.get('use_bt_output_file')
+
+            self.use_local_data = self.options.get('use_local_data')
+            if self.use_local_data is None:
+                self.use_local_data = os.environ.get('USE_LOCAL_DATA', 0)
+
+            self.use_local_data = bool(int(self.use_local_data))
+            self.pm_own = None
+            # self.cfdw_own = None
+
+            self.ctx = util.struct(
+                use_local_data=self.use_local_data, **self.options)
+
+            self.log.info("Agent started at %s", self.start_time)
+
+        except Exception as e:
+            self.log.critical(
+                "Unable to initialize QueuerAgent: %s", e)
+            raise
+
+    def __enter__(self):
+        # make a database connection and return it
+        self.pm_own = ora_xxx('PM_OWN', 'ORAPIM_DBP')
+        self.ctx = util.struct(pm_own=self.pm_own, **self.ctx)
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        if exc_type is None:
+            # No exception
+            pass
+
+        # make sure the db connection gets closed
+        # Release resources
+        try:
+            if self.pm_own is not None:
+                self.pm_own.release()
+
+        finally:
+            self.pm_own = None
+
+        # Release resources
+        # if self.config is not None:
+        #     self.config = None
+
+        # Display auditing details
+        # self.end_time = datetime.now()
+        # elapsed_time = self.end_time - self.start_time
+        # self.log.info("Overall time elapsed: %ss", elapsed_time)
+        # self.log.info("Agent completed at %s", self.end_time)
+        # self.log = None
+
+    @staticmethod
+    def get_request(repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        try:
+            data = repo.query.filter(model.batch_status_code == 'IN_QUEUE').all()
+        except DBAPIError:
+            logging.info('An Error has occured while connecting to the database.')
+        except:
+            logging.info('An Error has occured while fetching the data.')
+        return data
+
+    def get_priority_list(self, result):
+        """
+
+        :param result:
+        :return:
+        """
+
+        data_list = []
+        history_list = []
+        for i in result:
+            if i.bbg_program_code == 'GETDATA':
+                data_list.append(i)
+            else:
+                history_list.append(i)
+        data_list = self.get_priority_list_by_interface_code(data_list)
+        history_list = self.get_priority_list_by_interface_code(history_list)
+        plist = data_list + history_list
+        return plist
+
+    @staticmethod
+    def get_priority_list_by_interface_code(result):
+        """
+
+        :param result:
+        :return:
+        """
+        plist = []
+        for i in result:
+            if i.bbg_interface_code == 'SAPI':
+                plist.insert(0, i)
+            else:
+                plist.append(i)
+        return plist
+
+    def get_request_object(self, objdata, result_series, ctx):
+        description = 'Get data'
+        response_format ='VERTICAL'
+        data_items = map(lambda i: RequestDataItem(tag=i.pl_series_code), result_series)
+
+
+        headers = self.get_headers(objdata)
+        fields = self.get_request_fields(result_series)
+        request_options = map(
+            lambda key: RequestOptionItem(
+                option_name=key, option_value=headers[key]), headers.keys())
+
+        request = RequestItem(request_description=description,
+                              requestor_code=self.requestor_code,
+                              program_code=objdata.bbg_program_code,
+                              interface_code=objdata.bbg_interface_code,
+                              response_format_code=response_format,
+                              request_data_items=data_items,
+                              request_options=request_options,
+                              request_fields=fields
+                              )
+
+        payload = request.to_json()
+        return payload
+
+    def get_request_fields(self, result_series):
+        request_fields_list = []
+        for i in result_series:
+            request_fields_list.append(i.bbg_mnemonic)
+
+        return list(set(request_fields_list))
+
+    def get_headers(self, objdata):
+        headers = dict()
+        if objdata.bbg_program_code == "GETDATA":
+            headers['DATERANGE'] = str(objdata.asof_end_date_key)
+
+        elif objdata.bbg_program_code == "GETHISTORY":
+            headers['DATERANGE'] = str(objdata.asof_start_date_key) + \
+                                               "|" + str(objdata.asof_end_date_key)
+
+        return headers
+
+    def post_to_bt(self, payload):
+        """
+
+        :param payload:
+        :return:
+        """
+        url = "{}{}".format(self.base_url, 'request_data')
+        self.log.info('POST: %s, \r\n\t%s', url, payload)
+        response = uri_post(url, payload)
+        self.log.info('response: %s \r\nresponse:\t%s', url, response)
+
+        if response is None:
+            raise Exception("Response is empty")
+        elif response and isinstance(response, dict):
+            request_status = response['request_status']
+        else:
+            request_status = response
+            raise Exception(
+                "Service call:HTTP GET - {} failed with status: {}".format(
+                    url, request_status))
+
+        if request_status in self.bt_complete_status:
+            if request_status != 'SUCCESS':
+                raise Exception(
+                    "Service call:HTTP GET - {} failed!".format(url))
+
+        if request_status in self.bt_error_status:
+            error_type, errors = self.aggregate_errors(response)
+            raise Exception(
+                "Bloomberg{} Returned an Error: {}".format(
+                    error_type, errors))
+
+        status_uri = response['progression_url']
+        response = self.wait_for_response(
+            status_uri, interval=self.interval, timeout=self.timeout)
+
+        if not response:
+            raise Exception("Timed out while checking for status")
+        else:
+            status = response['request_status']
+
+            if status in self.bt_error_status:
+                msg = "Service call:HTTP GET - {} failed!\r\n".format(url)
+                msg = "{}With Response: {}".format(msg, response)
+                raise Exception(msg)
+
+            if self.use_bt_output_file:
+                return response
+
+            status_uri = response['progression_url']
+            response = self.wait_for_response(
+                status_uri, interval=self.interval, timeout=self.timeout)
+
+            if not response:
+                raise Exception("Timed out while checking for status")
+
+                # data = response['data']
+
+        return response
+
+    def update_request(self, batch_id, bt_request_id, progression_url,
+                       bt_status_code, request_obj, batch_status_code, repo):
+
+        """
+
+        :param batch_id:
+        :param bt_request_id:
+        :param progression_url:
+        :param bt_status_code:
+        :param request_obj:
+        :param batch_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        try:
+            update_row = repo.query.filter(model.batch_status_code == 'IN_QUEUE',
+                                           model.batch_id == batch_id).all()
+        except DBAPIError:
+            logging.info('An Error has occured while connecting to the database.')
+        except:
+            logging.info('An Error has occured while fetching the data.')
+        update_row[0].batch_status_code = batch_status_code
+        update_row[0].bt_request_id = bt_request_id
+        update_row[0].bt_status_code = bt_status_code
+        update_row[0].bt_request_payload = request_obj
+        update_row[0].bt_response_file_path = progression_url
+        repo.save(update_row)
+
+    def run(self):
+        """
+
+        :return:
+        """
+        ctx = self.ctx
+        ctx = util.struct(**ctx)
+        result = self.get_request(PlBbgBatchRepo())
+        priority_list = self.get_priority_list(result)
+        for i in priority_list:
+            repo = PlBbgBatchSeriesVwRepo()
+            model = repo.model
+            try:
+                result_batch = repo.query.filter(model.batch_id == i.batch_id).all()
+            except DBAPIError:
+                logging.info('An Error has occured while connecting to the database.')
+            except:
+                logging.info('An Error has occured while fetching the data.')
+            obj = self.get_request_object(i, result_batch, ctx=ctx)
+            print (obj)
+            response = self.post_to_bt(obj)
+            self.update_request(i.batch_id, response['request_id'], response['progression_url'],
+                                str(response['request_status']),
+                                str(obj), 'SENT_TO_BT', PlBbgBatchRepo())
+
+
+# noinspection PyBroadException
+def main():
+    """
+    Delegates all processing to Agent instance.
+    """
+    logger = logging.getLogger("{}".format(
+        os.path.splitext(os.path.basename(__file__))[0]))
+
+    try:
+        cmd_line = sanitize_cmd_line(copy.copy(sys.argv))
+        logging.info(cmd_line)
+        args = util.parse_args(*USAGE)
+        args.source_code = ''
+        args.etl_audit_id = ''
+        args.requestor_code='DA.PIMCOLIVE.DEV'
+        args.vertical = 'VERTICAL'
+        args.use_bt_output_file=''
+        # args.use_local_data=None
+        logging.info("Agent started")
+        with QueuerAgent(logger=logger, options=args) as agent:
+            agent.run()
+
+    except Exception as ex:
+        logger.critical("Agent exited with error: %s", ex)
+        return -1
+    else:
+        logger.info("Agent completed successfully.")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
