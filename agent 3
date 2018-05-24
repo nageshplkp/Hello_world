@@ -3,13 +3,16 @@
 """
 
 import getpass
-import logging
-import shutil
-import ssh
+import logging as log
+import os
+from shutil import copyfile
+
 from sqlalchemy import or_
+
+from etl.bbg_transport.util import BbgConfig
 from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
 
-DESTINATION = '/appl/da_dev/da_data/ff_pl/in'
+DESTINATION = '/appl/da_dev/da_data/ff_pl/in/'
 BT_COMPLETE_STATUS = ['BBGERROR', 'BTERROR', 'SUCCESS']
 
 
@@ -19,9 +22,18 @@ class LoaderAgent(object):
     """
 
     def __init__(self):
-        logging.info('LoaderAgent')
+        log.info('LoaderAgent')
         self.USERNAME = getpass.getuser()
 
+    @staticmethod
+    def copy_file(src, dst):
+        if os.path.isdir(dst):
+            dst = os.path.join(dst, os.path.basename(src))
+            copyfile(src, dst)
+            log.info("Copying {0} to {1}".format(src, dst))
+        else:
+            log.info("Can't copy {0} to destination: {1}".format(src, dst))
+        return True
     @staticmethod
     def get_requests(repo):
         """
@@ -34,6 +46,10 @@ class LoaderAgent(object):
             or_(model.batch_status_code == 'SENT_TO_BT',
                 model.bt_status_code in BT_COMPLETE_STATUS)).all()
         return data
+
+    def is_local_ftp(self):
+        return self.config.data[BbgConfig.KEY_BBG_FTP_HOST] == BbgConfig.INTERNAL_HOST_FLAG
+
 
     @staticmethod
     def update_request(batch_id, batch_status_code, repo):
@@ -49,28 +65,6 @@ class LoaderAgent(object):
         update_row[0].batch_status_code = batch_status_code
         repo.save(update_row)
 
-    @staticmethod
-    def load_csv(data_path):
-        """
-
-        :param data_path:
-        :return:
-        """
-        # try:
-        # 
-        #     server = ssh(host='devpmetlv1.pimco.imswest.sscims.com', 
-        #                  username='pachimat', private_key='/home/pachimat/.ssh/id_rsa')
-        #     result = server.execute('cp {0} {1}'.format(data_path, DESTINATION))
-        #     
-        #     print (result)
-        #     return result
-        
-        try:
-            shutil.copy(data_path, DESTINATION)
-            return True
-        except:
-            print("Unble to download the file.")
-            return False
 
     def run(self):
         """
@@ -80,7 +74,7 @@ class LoaderAgent(object):
         result = self.get_requests(PlBbgBatchRepo())
         for i in result:
             if i.bt_status_code == 'SUCCESS':
-                if self.load_csv(i.bt_response_file_path):
+                if self.copy_file(i.bt_response_file_path.strip(), DESTINATION):
                     self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
             elif i.bt_status_code == 'BBGERROR':
                 self.update_request(i.batch_id, 'BBG_ERROR', PlBbgBatchRepo())
