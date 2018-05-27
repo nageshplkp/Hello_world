@@ -1,1 +1,13 @@
 
+def __enter__(self):
+        # make a database connection and return it
+        self.pm_own = ora_xxx('PM_OWN', 'ORAPIM_DBP')
+        self.ctx = util.struct(pm_own=self.pm_own, **self.ctx)
+
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        if exc_type is None:
+            # No exception
+            pass
