@@ -1,0 +1,84 @@
+"""
+
+"""
+import getpass
+import logging
+
+from sqlalchemy import or_
+
+from etl.core.util import uri_get
+from etl.repo.fnd_cfdw.etl_config import EtlConfigRepo
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+
+class FetcherAgent(object):
+    """
+
+
+    """
+
+    def __init__(self):
+        logging.info('FetcherAgent')
+        self.USERNAME = getpass.getuser()
+        md = EtlConfigRepo.instance.get_by_config_code('PL_BT_ENDPOINT')
+        self.base_url = md.config_value
+
+    @staticmethod
+    def get_requests(repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        data = repo.query.filter(
+            or_(model.batch_status_code == 'SENT_TO_BT',
+                model.batch_status_code == 'PENDING')).all()
+        return data
+
+    def get_request_status_by_url(self, obj):
+        """
+
+        :param obj:
+        :return:
+        """
+        response = uri_get(self.base_url + 'check_status' + '/' + str(obj.bt_request_id))
+        return response
+
+    @staticmethod
+    def update_request(batch_id, data_file_path, bt_request_id, bt_status_code, repo):
+        """
+
+        :param batch_id:
+        :param data_file_path:
+        :param bt_request_id:
+        :param bt_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        update_row = repo.query.filter(model.bt_request_id == bt_request_id,
+                                       model.batch_id == batch_id).all()
+        update_row[0].bt_status_code = bt_status_code
+        if update_row[0].bt_status_code == 'BBGERROR':
+            update_row[0].batch_status_code = 'BBG_ERROR'
+        elif update_row[0].bt_status_code == 'BTERROR':
+            update_row[0].batch_status_code = 'BT_ERROR'
+        update_row[0].bt_response_file_path = data_file_path
+        repo.save(update_row)
+
+    def run(self):
+        """
+
+        :return:
+        """
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            response = self.get_request_status_by_url(i)
+            self.update_request(i.batch_id, response['data_file_path'], response['request_id'],
+                                response['request_status'], PlBbgBatchRepo())
+
+
+if __name__ == '__main__':
+    agent = FetcherAgent()
+    agent.run()
