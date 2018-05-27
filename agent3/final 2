@@ -1,0 +1,88 @@
+"""
+
+"""
+
+import getpass
+import logging as log
+import os
+from shutil import copyfile
+
+from etl.repo.fnd_cfdw.etl_config import EtlConfigRepo
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+
+class LoaderAgent(object):
+    """
+
+    """
+
+    def __init__(self):
+
+        try:
+            log.info('LoaderAgent')
+            self.USERNAME = getpass.getuser()
+            md = EtlConfigRepo.instance.get_by_config_code('PL_BT_DATA_FILE_PATH')
+            self.destination = md.config_value
+        except:
+            pass
+
+    @staticmethod
+    def copy_file(src, dst, program_code):
+        if os.path.isdir(dst):
+            destination_file = os.path.basename(src)
+            if program_code == 'GETDATA':
+                ext = '.inc'
+            else:
+                ext = '.full'
+            name_ext = os.path.splitext(destination_file)
+            destination_file = name_ext[0]+ext+name_ext[1]
+            dst = os.path.join(dst, destination_file)
+            copyfile(src, dst)
+            log.info("Copying {0} to {1}".format(src, dst))
+            return True
+        else:
+            log.info("Can't copy {0} to destination: {1}".format(src, dst))
+            return False
+
+    @staticmethod
+    def get_requests(repo):
+        """
+
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        data = repo.query.filter(model.batch_status_code == 'SENT_TO_BT').all()
+        return data
+
+    @staticmethod
+    def update_request(batch_id, batch_status_code, repo):
+        """
+
+        :param batch_id:
+        :param batch_status_code:
+        :param repo:
+        :return:
+        """
+        model = repo.model
+        update_row = repo.query.filter(model.batch_id == batch_id).all()
+        update_row[0].batch_status_code = batch_status_code
+        repo.save(update_row)
+
+    def run(self):
+        """
+
+        :return:
+        """
+        result = self.get_requests(PlBbgBatchRepo())
+        for i in result:
+            if i.bt_status_code == 'SUCCESS':
+                if self.copy_file(i.bt_response_file_path.strip(), self.destination, i.bbg_program_code):
+                    self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
+
+
+if __name__ == '__main__':
+    agent = LoaderAgent()
+    log.info('Start of the program')
+    agent.run()
+    log.info('End of the program')
