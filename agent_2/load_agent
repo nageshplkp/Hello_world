@@ -1,0 +1,142 @@
+#!/usr/bin/env python
+
+"""
+Download CVS file to FF_Pl
+"""
+
+import getpass
+import logging
+import os
+import sys
+from shutil import copyfile
+
+from sqlalchemy.exc import DBAPIError
+
+from etl.repo.fnd_cfdw.etl_config import EtlConfigRepo
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+
+class LoaderAgent(object):
+    """
+        This class is for downloading CSV file to FF_PL
+    """
+
+    def __init__(self):
+
+        logging.info('Fetching the values of config code from EtlConfigRepo')
+        self.log = logging.getLogger("{}".format(
+            os.path.splitext(os.path.basename(__file__))[0]))
+        try:
+            logging.info('LoaderAgent')
+            self.USERNAME = getpass.getuser()
+            rec = EtlConfigRepo.instance.get_by_config_code('PL_BT_DATA_FILE_PATH')
+            self.destination = rec.config_value
+
+        except Exception as ex:
+            self.log.critical(
+                "Unable to initialize %s: %s", self.__class__.__name__, ex)
+            raise
+
+    def __enter__(self):
+        # make a database connection and return it
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        if exc_type is None:
+            # No exception
+            pass
+
+    @staticmethod
+    def copy_file(src, dst, program_code):
+        """
+        copy_file(src, dst, program_code) -> Bool
+        Take src, dst and program_code as agrs and copy the file
+        if successful return True else False.
+        :param src: str
+        :param dst: str
+        :param program_code: str
+        :return: Bool
+        """
+        if os.path.isdir(dst):
+            destination_file = os.path.basename(src)
+            if program_code == 'GETDATA':
+                ext = '.inc'
+            else:
+                ext = '.full'
+            name_ext = os.path.splitext(destination_file)
+            destination_file = name_ext[0]+ext+name_ext[1]
+            dst = os.path.join(dst, destination_file)
+            copyfile(src, dst)
+            logging.info("Copying %s to %s" % (src, dst))
+            return True
+        else:
+            logging.info("Can't copy %s to destination: %s" % (src, dst))
+            return False
+
+    @staticmethod
+    def get_request(repo):
+        """
+        get_requests() -> Object
+        return the Objects with SENT_TO_BT as batch_status_code
+        :param repo: Object
+        :return: Object
+        """
+        model = repo.model
+        try:
+            logging.info('Getting all the requests from pl_bbg_batch table which are in SENT_TO_BT status')
+            data = repo.query.filter(model.batch_status_code == 'SENT_TO_BT').all()
+            return data
+        except DBAPIError as err:
+            logging.error(err)
+
+    @staticmethod
+    def update_request(batch_id, batch_status_code, repo):
+        """
+        Update the table with the corresponding values.
+        :param batch_id: int
+        :param batch_status_code: str
+        :param repo: object
+        """
+        logging.info('Updating the staging table with the status of the request')
+        model = repo.model
+        try:
+
+            update_row = repo.query.filter(model.batch_id == batch_id).all()
+            update_row[0].batch_status_code = batch_status_code
+            repo.save(update_row)
+        except DBAPIError as ex:
+            logging.error(ex)
+
+    def run(self):
+        """
+        Get the data file path for all the requests, copy and  update the table.
+        """
+        result = self.get_request(PlBbgBatchRepo())
+        for i in result:
+            if i.bt_status_code == 'SUCCESS':
+                if self.copy_file(i.bt_response_file_path.strip(), self.destination, i.bbg_program_code):
+                    self.update_request(i.batch_id, 'BT_DONE', PlBbgBatchRepo())
+
+
+def main():
+    """
+    Delegates all processing to Agent instance.
+    """
+    logger = logging.getLogger("{}".format(
+        os.path.splitext(os.path.basename(__file__))[0]))
+
+    try:
+        logging.info("Loader Agent started")
+        with LoaderAgent() as agent:
+            agent.run()
+    except Exception as ex:
+        logger.critical("Loader Agent exited with error: %s", ex)
+        return -1
+    else:
+        logger.info("Loader Agent completed successfully.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
