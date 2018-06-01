@@ -1,13 +1,48 @@
+# Pseudo code for the agent
+<start>
 
-def __enter__(self):
-        # make a database connection and return it
-        self.pm_own = ora_xxx('PM_OWN', 'ORAPIM_DBP')
-        self.ctx = util.struct(pm_own=self.pm_own, **self.ctx)
+get the action (REQUEST, POLL)
 
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-
-        if exc_type is None:
-            # No exception
-            pass
+if action = REQUEST
+	call RequestAgent
+	get list of requests from PlBbgBatchRepo with batch_status_code equal to 'IN_QUEUE'
+	prioritize the list with reference to bbg_program_code
+		Go through the list of request
+			if bbg_program_code equal to 'GETDATA'
+				append into a new list data_list
+			else
+				append into a new list history_list
+				
+		re-prioritize the lists with reference to bbg_interface_code
+			Go through the list of prioritize_list
+				if bbg_interface_code equal to SAPI
+					give high priority
+				else 
+					give low priority
+		extend data_list with history_list with 			
+	get all the values from PlBbgBatchSeriesVwRepo
+	generate an request object from values
+	post the object and get the response	
+	update the PL_bbg_batch table with batch_status_code, bt_request_id, 
+		bt_status_code, request_obj from the response
+		
+if action = POLL
+	call PollAgent
+	get list of requests from Pl_Bbg_Batch_vw table  with batch_status_code equal to 'SENT_TO_BT'
+	go through the list for each bt_request_id
+		get response
+		update the pl_bbg_batch table with bt_status_code , bt_response_file_path from the response
+			if bt_status_code = BBGERROR
+				update batch_status_code as BBG_ERROR and bt_status_code 
+			else bt_status_code equal to BTERROR
+				update batch_status_code as BT_ERROR and bt_status_code
+			elif bt_status_code equal to SUCCESS
+				copy the csv file from bt_response_file_path to ff_pl
+				if bbg_program_code equal to GETDATA
+					make the extension as .inc.csv
+				else bbg_program_code equal to GETHISTORY
+					make the extension as .full.csv	
+				update the pl_bbg_table with BT_DONE, bt_status_code and BT_REQUEST_FILE_PATH 
+			
+<end>		
+		
