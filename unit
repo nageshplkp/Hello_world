@@ -1,0 +1,44 @@
+import unittest
+import json
+import requests
+import pytest
+from pytest import fixture
+from etl.pl_auto import agent1
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+
+BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+GET_URL = '{}/check_status'.format(BASE_URL)
+POST_URL = '{}/request_data'.format(BASE_URL)
+
+@fixture(scope="module")
+def repo():
+    return PlBbgBatchRepo()
+
+@pytest.mark.parameterize("test_input,expected_output",[
+                    (6788,200),
+                    (12345,404)
+    ])
+def test_get(test_input,expected_output):
+    response = requests.get(GET_URL+'/'+test_input)
+    assertEqual(response.status_code, expected_output)
+
+def test_post():
+    payload=
+    json.dumps(payload)
+    response = requests.post(POST_URL,payload)
+    assertEqual(response.status_code, 200)
+    response = requests.post(POST_URL+'test',payload)
+    assertEqual(response.status_code, 200)
+   
+def test_get_request(repo):
+    result = agent1.QueuerAgent().get_request(repo)
+    assertEqual(isinstance(result), 'Queryset')
+
+def test_get_priority_list(repo):
+    result = agent1.QueuerAgent().get_request(repo)
+    plist=agent1.QueuerAgent().get_priority_list(result)
+    assertEqual(isinstance(plist), 'list')
+
+def test_copy_file():
+    plist=agent1.QueuerAgent().copy_file(src,dest,program_code)
+    assert True
