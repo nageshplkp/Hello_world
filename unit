@@ -1,44 +1,66 @@
-import unittest
 import json
-import requests
 import pytest
+import requests
+from pimco_live import agent
+from etl.core.util import uri_get, uri_post
+
 from pytest import fixture
-from etl.pl_auto import agent1
+
 from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
 
 BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
 GET_URL = '{}/check_status'.format(BASE_URL)
 POST_URL = '{}/request_data'.format(BASE_URL)
+src = '/appl/da_dev/da_data/bbg_transport/in/20180601.9998.csv'
+dest= '/appl/da_dev/da_data/ff_pl/in/'
+program_code ='GETDATA'
+
 
 @fixture(scope="module")
 def repo():
     return PlBbgBatchRepo()
 
-@pytest.mark.parameterize("test_input,expected_output",[
-                    (6788,200),
-                    (12345,404)
-    ])
-def test_get(test_input,expected_output):
-    response = requests.get(GET_URL+'/'+test_input)
-    assertEqual(response.status_code, expected_output)
 
-def test_post():
-    payload=
-    json.dumps(payload)
-    response = requests.post(POST_URL,payload)
-    assertEqual(response.status_code, 200)
-    response = requests.post(POST_URL+'test',payload)
-    assertEqual(response.status_code, 200)
-   
+@pytest.mark.parametrize("test_input,expected_output", [
+    (9999, 'SUCCESS'),
+    (9998, 'SUCCESS')
+])
+def test_get(test_input, expected_output):
+    response = uri_get(GET_URL + '/' + str(test_input))
+    assert response['request_status'] == expected_output
+
+
+# def test_post():
+#     payload =
+#     json.dumps(payload)
+#     response = requests.post(POST_URL, payload)
+#     assert response.status_code == 200
+#     response = requests.post(POST_URL + 'test', payload)
+#     assert response.status_code == 200
+
+@pytest.mark.parametrize("test_input,expected_output", [
+    (12345, 1)
+])
+def test_get_fail(test_input, expected_output):
+    try:
+        response = uri_get(GET_URL + '/' + str(test_input))
+    except:
+         flag = 1
+    assert flag == expected_output
+
+
 def test_get_request(repo):
-    result = agent1.QueuerAgent().get_request(repo)
-    assertEqual(isinstance(result), 'Queryset')
+    result = agent.FetcherAgent.get_request(repo, 'req')
+    assert type(result) == list
+
 
 def test_get_priority_list(repo):
-    result = agent1.QueuerAgent().get_request(repo)
-    plist=agent1.QueuerAgent().get_priority_list(result)
-    assertEqual(isinstance(plist), 'list')
+    result = agent.RequestAgent().get_request(repo, 'req')
+    plist = agent.RequestAgent().get_priority_list(result)
+    assert type(plist) == list
+
 
 def test_copy_file():
-    plist=agent1.QueuerAgent().copy_file(src,dest,program_code)
-    assert True
+    rv = agent.ResponseAgent().copy_file(src, dest, program_code)
+    if rv:
+        assert True
