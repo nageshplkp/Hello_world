@@ -1,0 +1,82 @@
+#pl_validation
+<start>
+declare the class ValidateRequest
+	initialize the variables request,script_name and menmonic
+
+	validate method:
+		log the info with the request parameters ticker,yellow_key and menmonic
+		call the method get_n_validate_pim_mnemonic()
+        call the method update_reference_details()
+        call the method get_exchange_n_pricing()
+        call the method validate_yellow_key()
+        call the method validate_pim_double()
+        call the method update_valid_status()
+     
+     validate_pim_double method:
+     	return if pl_request_status_code is 'IP'
+     	
+     	if this requests already exists:
+     		log the info saying that this request already exists along with the request parameters
+     		update the request to ONHOLD by calling the method update_pl_request
+
+    update_reference_details method:
+    	return if pl_request_status_code is 'IP'
+     	get the reference details by calling method get_reference_details with mnemonic as arguement
+     	update the request with the refere details by calling the method update_pl_request
+
+    get_n_validate_pim_mnemonic method:
+    	return if pl_request_status_code is 'IP'
+    	initialize the variable pim_mnemonic by calling the method get_pim_mnemonic
+
+    	if the mnemonic exists:
+    		prepare the update_vlaues dictionary with the tikcer and menmonic update_vlaues
+    	else:
+    		prepare the update_vlaues dictionary with the error message as "Mnemonic not found in PL_TSS_FIELD_RULE" and pl_request_status_code as 'ONHOLD'
+
+    	update the request values by calling the method update_pl_request
+
+    get_pim_mnemonic method:
+
+    	if req_mnemonic is 'PX_LAST':
+    		get the menmonic value by calling the method get_mnemonic_value with the arguements as req_mnemonic,bbg_security_typ,bbg_px_method(all these three are available from request method)
+
+    		return if mnemonic not exists
+    	else:
+    		get the mnemonic from the request 
+
+    	check if the mnemonic exists by calling the method mnemonic_exists
+
+    	return the mnemonic if the the mnemonic exists 
+
+    	return mnemonic title
+
+    get_exchange_n_pricing method:
+    	return if pl_request_status_code is 'IP'
+    	get the ticker_parm from request
+
+    	iterate through ticker_parm:
+    		if the param is an exchange_code:
+    			assign param to the variable exchange_code
+    			log the exchang_code
+    			update the request with exchang_code by calling the method update_pl_request
+
+    		if the param is an pricing_source:
+    			assign param to the variable pricing_source
+    			log the pricing_source
+    			update the request with pricing_source by calling the method update_pl_request
+    
+    validate_yellow_key method:
+    	return if pl_request_status_code is 'IP'
+    	get the yellow_key from request
+    	if yellow_key != bbg_market_sector_des:
+    		update the request with status as 'ONHOLD' and msg as Requested yellow is not matching with bbg return yellow along with the values of bbg_market_sector_des and yellow_key
+
+    update_pl_request method:
+    	update the request with the supplied parameters by calling the method update_request_with_mnemonic from provider.pl_request_provider
+		
+	update_valid_status method:
+		call the method  update_pl_request with the parameters 'IP', 'Marking VALID',
+                               {'pl_request_status_code': 'VALID',
+                                'public_msg': 'Request validated successfully',
+                                'row_update_by': script_name}   	
+<end>	
