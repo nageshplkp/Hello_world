@@ -1,0 +1,48 @@
+#Pimco Live request validator
+<start>
+declare the variables script_name,bbg_req_file_prefix,mandatory_mnemonics,USAGE
+
+read the working directory from the command line arguements
+append this directory to 'DA_DATA_DIR' which is configured in the environment
+validate the request
+	validate the bbgdata first
+		set bbg_req_err_cnt to 0
+		while true:
+			get the requests by calling get_requests method from provider.pl_request_provider by passing status as 'NEW' and limit as 2000
+			
+			if there are no requests break the loop
+			
+			prepare the bbg_req_filename as bbg_req_file_prefix_timestamp 		
+			get the errors by calling the function PlRequestNParseBbg from pl_bbg_validation by passing the requests and bbg_req_filename and mandatory mnemonics
+			if there are errors increment the bbg_req_err_cnt
+			if the bbg_req_err_cnt reaches 10 
+				exit the script by printing the message "Too many ERRORS in Bloomberg data request - Please check" or "SCRIPT COMPLETED SUCCESSFULLY..!!" and exit_code as 1
+			continue the loop
+
+	check existing series
+		get the requests by calling get_requests method from provider.pl_request_provider by passing status as 'IP'
+		check the count of requests
+			if the reuests count is zero
+				exit the script by printing the message "No requests for Validation/Registration. Exit..!!!!"
+		map the requests to check_benchmark_entry
+			initialize the public_msg variable to "BBG triplet already present in driver table"
+			fetch the ticker,yellow,mnemonic values from request
+			fetch the row by calling the function bbg_triplet_exists from provider.pl_benchmark_driver_provider by passing the above three values
+			if the row eixts:
+				log the message with the above values 
+				prepare the dictionary update_values as
+							 pl_request_status_code='EXISTING',
+                             public_msg=public_msg,
+                             row_update_by=script_name
+				call the method update_request_with_mnemonic from provider.pl_request_provider with the parameters as ticker, yellow, mnemonic, 'IP',update_values
+			else:
+				log the message with the new values
+
+	validate the request
+
+		get the requests by calling get_requests method from provider.pl_request_provider by passing status as 'IP'
+		check the count of requests
+		iterate through the requests:
+			log the request information
+			call the validate method of ValidateRequest class from pl_validation on each request
+<end>		
