@@ -34,3 +34,5 @@ for i in result:
     print i
     ins = <plbbgbatch>.insert()
     saconn.execute(ins, id=2, name='test', age=12)
+engine = create_engine("oracle+cx_oracle://<username>:<password>@(DESCRIPTION = (LOAD_BALANCE=on) (FAILOVER=ON) (ADDRESS = (PROTOCOL = TCP)(HOST = <host>)(PORT = 1521)) (CONNECT_DATA = (SERVER = DEDICATED) (SERVICE_NAME = devdb)))")                                                                                                                                                   
+    
