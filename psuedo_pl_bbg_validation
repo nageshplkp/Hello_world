@@ -1,0 +1,85 @@
+#pl_bbg_validation
+<start>
+declare the class PlRequestNParseBbg
+	initialize the variables requests,mandatory_mnemonics,request_file_name,error,row,script_name
+
+	request_and_parse_bbg_data method:
+		log the info with the BBG Request file name
+		get the values of req_securities, req_mnemonics by calling the method get_securities
+        bbg_mnemonics = req_mnemonics + self.mandatory_mnemonics
+        intialize the parser by calling the method request_bbg_data the parameters req_securities, bbg_mnemonics
+        log the error if any
+        call the method parse_bbg_data by passing the parameters parser, req_mnemonics
+        return
+     
+     request_bbg_data method:
+     	get the Bloomberg object
+        wait_time= 4 * 60 + len(mnemonics) * 10
+        call the std_request method on the bbg object with the parameters request_file_name,securities,mnemonics,wait_time
+        assign the return value of above method to parser
+        return parser
+     	
+     	
+    parse_bbg_data method:
+        iterate through the parser:
+            log the security info
+            if row['RETURN_STATUS'] == 0:
+                call the method update_mandatory_mnemonic_values()
+                call the method validate_mnemonics(request_mnemonics)
+                call the method update_bbg_return_status('IP')
+            else:
+                call the method update_bbg_return_status('INVALID')
+        return
+
+    update_bbg_return_status method:
+    	log the info as Updating BBG return status
+        get the public_msg value by calling the method get_status_desc with the return_status parameter
+        prepare the update_val dictory with the keys 
+                          pl_request_status_code=status
+                          bbg_return_status_code=row['RETURN_STATUS']
+                          public_msg=public_msg
+                          row_update_by=script_name
+        log the info with the update parameters
+        call the update_request method with the parameters bbg_ticker, bbg_yellow, 'NEW', update_val
+
+    update_mandatory_mnemonic_values method:
+
+    	log the info as updating mandatory bbg mnemonic values
+        get the values of bbg_ticker, bbg_yellow by calling the method get_bbg_attr
+        initialize the field_values as a dixctionary
+        iterate through the mandatory mnemonics:
+            add all the fields to the above declared dictionary
+            if fiels equals ' ' or  'N.A.' or 'N.A':
+                assign None value to the field
+        upodate the bbg_country value filed in the field_values dictionary
+        update the row_update_by field in the field_values dictionary
+        log the info with bbg_ticker, bbg_yellow
+        call the update_request method with the parameters bbg_ticker, bbg_yellow, 'NEW', field_values
+
+    validate_mnemonics method:
+        log the info as Validating requested mnemonics
+        iterate through request_mnemonics:
+            get the values of bbg_ticker, bbg_yellow by calling the method get_bbg_attr
+            if the mnemonic equals 'FLD UNKNOWN':
+                prepare the update_values dictory with the keys 
+                          pl_request_status_code='INVALID'
+                          public_msg='Invalid BBG Mnemonic'
+                call the update_request_with_mnemonic method with the parameters bbg_ticker, bbg_yellow, mnemonic, 'NEW', and update_values
+    
+    get_securities method:
+   
+        intialize the two empty lists securities and mnemonics
+        iterate through the requests:
+            log the info with request parameters
+            append securities with appending ticker and yellow_key
+            append mnemonics with mnemonics
+        remove the deplicates from securities, mnemonics
+        return securities, mnemonics
+
+
+    get_bbg_attr method:
+        get security value from row['SECURITY']
+        get bbg_ticker, bbg_yellow from security
+        return bbg_ticker, bbg_yellow
+		
+<end>	
