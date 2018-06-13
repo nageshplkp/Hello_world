@@ -1,0 +1,46 @@
+import getpass
+import datetime
+
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+from etl.repo.pim_pm.bbg_interface import BbgInterfaceRepo
+
+repo2 = BbgInterfaceRepo()
+repo = PlBbgBatchRepo()
+model = repo.model
+
+insert_row = repo2.instance.model()
+username = getpass.getuser()
+
+
+def __init__(self):
+    self.USERNAME = getpass.getuser()
+
+
+def __enter__(self):
+    # make a database connection and return it
+    return self
+
+
+def __exit__(self, exc_type, exc_value, exc_traceback):
+    if exc_type is None:
+        pass
+
+
+insert_row = repo.instance.model()
+
+
+insert_row.batch_id = 8889
+insert_row.bbg_program_code = 'DL'
+insert_row.bbg_interface_code ='GETDATA'
+insert_row.asof_start_date_key ='20180509'
+insert_row.asof_end_date_key ='20180509'
+insert_row.batch_status_code ='IN_QUEUE'
+insert_row.bt_request_id =1223
+insert_row.bt_status_code ='SUCCESS'
+insert_row.bt_request_payload=''
+insert_row.bt_response_file_path=''
+insert_row.row_insert_by ='PM_OWN'
+insert_row.row_insert_date = datetime.datetime.now()
+insert_row.row_update_by ='PM_OWN'
+insert_row.row_update_date =datetime.datetime.now()
+repo.save(insert_row)
