@@ -1,0 +1,67 @@
+import json
+import pytest
+import requests
+from pimco_live import agent
+from etl.core.util import uri_get, uri_post, vo, struct
+
+from pytest import fixture
+from mock import patch
+from etl.repo.pim_pm.pl_bbg_batch import PlBbgBatchRepo
+from etl.repo.pim_pm.pl_bbg_batch_series_vw import PlBbgBatchSeriesVwRepo
+
+MODULE_UNDER_TEST='pimco_live.agent'
+X_REQUEST = 'REQUEST'
+
+BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+GET_URL = '{}check_status'.format(BASE_URL)
+POST_URL = '{}request_data/'.format(BASE_URL)
+src = '/appl/da_dev/da_data/bbg_transport/in/20180601.9998.csv'
+dest = '/appl/da_dev/da_data/ff_pl/in/'
+program_code = 'GETDATA'
+
+
+def test_get_request(x):
+    x.gr(x.repo, X_REQUEST)
+    x.gr.assert_called_with(x.repo, X_REQUEST)
+
+
+@fixture
+def x(x_get_request, x_repo, x_get_priority_list, x_get_priority_list_by_interface_code, x_update_request):
+    return struct(gr=x_get_request, gpl=x_get_priority_list,
+                  gpl_ic=x_get_priority_list_by_interface_code, ur=x_update_request, repo=x_repo)
+
+
+@fixture
+def x_get_request(x_request):
+    with patch.object(x_request, 'get_request') as x:
+        yield x
+
+
+@fixture
+def x_get_priority_list(x_request):
+    with patch.object(x_request, 'get_priority_list') as x:
+        yield x
+
+
+@fixture
+def x_get_priority_list_by_interface_code(x_request):
+    with patch.object(x_request, 'get_priority_list_by_interface_code') as x:
+        yield x
+
+
+@fixture
+def x_update_request(x_request):
+    with patch.object(x_request, 'update_request') as x:
+        yield x
+
+
+@fixture
+def x_request():
+    with patch(MODULE_UNDER_TEST + '.RequestAgent') as x:
+        yield x
+
+
+@fixture
+def x_repo():
+    with patch(MODULE_UNDER_TEST + '.PlBbgBatchRepo') as x:
+        yield x
