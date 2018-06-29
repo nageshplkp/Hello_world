@@ -1,0 +1,183 @@
+import datetime
+
+import pytest
+from mock import patch
+from pytest import fixture
+import json
+
+from etl.core.util import struct
+
+MODULE_UNDER_TEST = 'pimco_live.agent'
+X_REQUEST = 'REQUEST'
+# X_BATCHES = [{u'asof_end_date_key': 20180514, u'asof_start_date_key': 20180509, u'bt_response_file_path': None,
+#              u'row_insert_by': 'PM_OWN', u'batch_status_code': 'IN_QUEUE', u'bt_status_code': None,
+#               u'row_insert_date': datetime.datetime(2018, 5, 14, 10, 27, 21),
+#               u'row_update_by': 'pm_own', u'bbg_program_code': 'GETDATA', u'bt_request_id': None,
+#               u'row_update_date': datetime.datetime(2018, 6, 14, 15, 52, 19), u'batch_id': 880001,
+#               u'bt_request_payload': None, u'bbg_interface_code': 'DL'}]
+
+X_BATCHES = [{'test_bbg_interface_code': 'TEST'}]
+BASE_URL = 'http://ptp-dev/workshop/service/da/bbg_transport/'
+GET_URL = '{}check_status'.format(BASE_URL)
+POST_URL = '{}request_data/'.format(BASE_URL)
+X_SRC = '/temp/7327.csv'
+X_DEST = '/temp/'
+X_PROGRAM_CODE = 'TEST_PROGRAM_CODE'
+X_OBJECT_LIST = 'sadasd'
+
+obj = {'test': 'test'}
+X_PAYLOAD = json.dumps(obj)
+X_DATA_FILE_PATH = '/temp/'
+X_BT_REQUEST_ID = 1234
+X_BT_STATUS_CODE = 'SUCCESS'
+X_LIST_OBJECT = []
+X_RESULT_BATCH = []
+
+
+def test_get_request(x):
+    x.gr(x.repo, X_REQUEST)
+    x.gr.assert_called_with(x.repo, X_REQUEST)
+
+
+def test_get_priority_list(x):
+    x.gpl(X_BATCHES)
+    x.gpl.assert_called_with(X_BATCHES)
+
+
+
+
+def test_get_priority_list_by_interface_code(x):
+    x.gpl_ic(X_OBJECT_LIST)
+    x.gpl_ic.assert_called_with(X_OBJECT_LIST)
+
+
+# def test_get_request_object(x):
+#     x.gro(X_LIST_OBJECT, X_RESULT_BATCH)
+#     x.gro.assert_called_with(X_LIST_OBJECT, X_RESULT_BATCH)
+
+
+def test_post_to_bt(x):
+    x.ptb(X_PAYLOAD)
+    x.ptb.assert_called_with(X_PAYLOAD)
+
+
+def test_update_request(x):
+    x.ur(X_DATA_FILE_PATH, X_BT_REQUEST_ID, X_BT_STATUS_CODE, x.repo)
+    x.ur.assert_called_with(X_DATA_FILE_PATH, X_BT_REQUEST_ID, X_BT_STATUS_CODE, x.repo)
+
+
+def test_get_request_status_by_url(x):
+    x.grs(X_PAYLOAD)
+    x.grs.assert_called_with(X_PAYLOAD)
+
+# def test_response_update_request(x):
+#     x.rur(<Update the parameters>)
+#     x.rur.assert_called_with()
+
+
+def test_copy_file(x):
+    x.cf(X_SRC, X_DEST, X_PROGRAM_CODE)
+    x.cf.assert_called_with(X_SRC, X_DEST, X_PROGRAM_CODE)
+
+
+@pytest.mark.parametrize('req_action', ['REQUEST', 'POLL'])
+def test_get_request_simple(x, req_action):
+    result_set = x.gr(x.repo, req_action).return_value ='ewqd'
+    assert result_set
+
+
+@pytest.mark.parametrize('req_action', ["Invalid Option1", "Invalid Option2"])
+def test_get_request_invalid_option(x, req_action):
+    result_set = x.gr(x.repo, req_action).return_value = []
+    assert len(result_set) == 0
+
+
+@pytest.mark.parametrize('config_param', ["base_url", "description",
+                                          "response_format", "requestor_code", "username"])
+def test_request_agent_parameters(x, config_param):
+    assert getattr(x.rg, config_param) != ""
+
+
+
+@fixture
+def x_get_request(x_request):
+    with patch.object(x_request, 'get_request') as x:
+        yield x
+
+
+@fixture
+def x_get_priority_list(x_request):
+    with patch.object(x_request, 'get_priority_list') as x:
+        yield x
+
+
+@fixture
+def x_get_priority_list_by_interface_code(x_request):
+    with patch.object(x_request, 'get_priority_list_by_interface_code') as x:
+        yield x
+
+
+@fixture
+def x_get_request_object(x_request):
+    with patch.object(x_request, 'get_request_object') as x:
+        yield x
+
+
+@fixture
+def x_post_to_bt(x_request):
+    with patch.object(x_request, 'post_to_bt') as x:
+        yield x
+
+
+@fixture
+def x_update_request(x_request):
+    with patch.object(x_request, 'update_request') as x:
+
+        yield x
+
+
+@fixture
+def x_get_request_status_by_url(x_response):
+    with patch.object(x_response, 'get_request_status_by_url') as x:
+        yield x
+
+
+@fixture
+def x_response_update_request(x_response):
+    with patch.object(x_response, 'update_request') as x:
+        yield x
+
+
+@fixture
+def x_copy_file(x_response):
+    with patch.object(x_response, 'copy_file') as x:
+        yield x
+
+
+@fixture
+def x_request():
+    with patch(MODULE_UNDER_TEST + '.RequestAgent') as x:
+        yield x
+
+
+@fixture
+def x_response():
+    with patch(MODULE_UNDER_TEST + '.ResponseAgent') as x:
+        yield x
+
+
+@fixture
+def x_repo():
+    with patch(MODULE_UNDER_TEST + '.PlBbgBatchRepo') as x:
+        yield x
+
+
+@fixture(name='x')
+def mother(x_get_request, x_repo, x_get_priority_list,
+           x_get_priority_list_by_interface_code, x_update_request,
+           x_request, x_post_to_bt, x_copy_file, x_get_request_status_by_url):
+    return struct(gr=x_get_request, gpl=x_get_priority_list,
+                  gpl_ic=x_get_priority_list_by_interface_code, gro=x_get_request_object, ptb=x_post_to_bt,
+                  ur=x_update_request,
+                  grs=x_get_request_status_by_url, rur=x_response_update_request, cf=x_copy_file, repo=x_repo, rg=x_request)
+
