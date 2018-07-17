@@ -1,0 +1,241 @@
+import argparse
+import json
+
+import pytest
+from mock import patch
+from pytest import fixture
+
+from bbg_ff import bbg_ff_agent
+from bbg_ff.bbg_ff_agent import FetcherAgent, RequestAgent, ResponseAgent
+from core.rest.client import ClientException
+from etl.core.util import struct
+
+PAYLOAD = json.dumps({'test': 'test'})
+MODULE_UNDER_TEST = 'bbg_ff.bbg_ff_agent'
+X_OPTIONS = ['REQUEST', 'POLL']
+REQUEST_INSTANCE = RequestAgent()
+RESPONSE_INSTANCE = ResponseAgent()
+RESPONSE = {
+    "request_status": "SUCCESS",
+    "request_id": "19910",
+    "data_file_path": "/test/bbg_transport/in/20180709.19910.csv"
+}
+RESULT = ['Test', 'Test2']
+DESTINATION = '/appl/da_dev/da_data/ff_dats/in'
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_main_method_with_valid_inputs(x, options):
+    x.parse_args.return_value = argparse.Namespace(action=options)
+    test_result = bbg_ff_agent.main()
+    assert test_result == 0
+
+
+def test_main_exit_with_exception_when_input_not_in_options(x):
+    x.parse_args.return_value = 'test'
+    with pytest.raises(Exception):
+        bbg_ff_agent.main()
+
+
+def test_main_method_run_method_throws_exception(x):
+    x.parse_args.return_value = argparse.Namespace(action='POLL')
+    x.repo.side_effect = RuntimeError()
+    test_result = bbg_ff_agent.main()
+    assert test_result == -1
+
+
+def test_get_request_invalid_option_should_return_empty_list(x):
+    result_set = FetcherAgent._get_request(x.repo, 'Invalid')
+    assert len(result_set) == 0
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_get_request_valid_input(x, options):
+    x.repo.query.filter.return_value.all.return_value = RESULT
+    result_list = FetcherAgent._get_request(x.repo, options)
+    assert isinstance(result_list, list)
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_get_request_exception(x, options):
+    x.repo.query.filter.return_value.all.side_effect = ClientException
+    with pytest.raises(Exception):
+        FetcherAgent._get_request(x.repo, options)
+
+
+@pytest.mark.parametrize('x_attr', ["base_url", "description",
+                                    "response_format", "requestor_code", "username"])
+def test_request_agent_parameters(x_attr):
+    assert hasattr(REQUEST_INSTANCE, x_attr)
+
+
+def test_request_run_method_exception(x):
+    x.parse_args.return_value = argparse.Namespace(action='REQUEST')
+    x.rgp.return_value = [x.query]
+    x.DatsBbgBatchSeriesRepo().query.filter.return_value.all.side_effect = RuntimeError()
+    bbg_ff_agent.main()
+    with pytest.raises(Exception):
+        RequestAgent.run()
+
+
+def test_request_get_request_call(x):
+    REQUEST_INSTANCE.run()
+    x.rqg.assert_called_with(x.repo(), 'REQUEST')
+
+
+def test_get_priority_list_call(x):
+    result = x.rqg()
+    REQUEST_INSTANCE.run()
+    x.rgp.assert_called_with(result)
+
+
+def test_request_update_request_call(x):
+    x.rgp.return_value = [x.query]
+    x.po.return_value = RESPONSE
+    REQUEST_INSTANCE.run()
+    x.rqu.assert_called_with(x.query.batch_id, '19910', 'SUCCESS', str(x.go()),
+                             'SENT_TO_BT', x.repo())
+
+
+def test_get_request_object_call(x):
+    x.rgp.return_value = [x.rqg]
+    REQUEST_INSTANCE.run()
+    x.go.assert_called_with(x.rqg, x.query_series)
+
+
+def test_response_get_request(x):
+    RESPONSE_INSTANCE.run()
+    x.rgr.assert_called_with(x.repo(), 'POLL')
+
+
+def test_post_to_bt(x):
+    x.rgp.return_value = [x.rqg]
+    obj = x.go()
+    REQUEST_INSTANCE.run()
+    x.po.assert_called_with(obj)
+
+
+def test_get_request_status_by_url(x):
+    x.rgr.return_value = [x.query]
+    RESPONSE_INSTANCE.run()
+    x.gs.assert_called_with(x.query)
+
+
+def test_copy_file(x):
+    x.rgr.return_value = [x.query]
+    x.gs.return_value = RESPONSE
+    RESPONSE_INSTANCE.run()
+    x.cf.assert_called_with(RESPONSE['data_file_path'], DESTINATION,
+                            x.bbg_program_code, x.batch_id)
+
+
+def test_update_request(x):
+    x.rgr.return_value = [x.query]
+    x.gs.return_value = RESPONSE
+    RESPONSE_INSTANCE.run()
+    x.ur.assert_called_with(RESPONSE['data_file_path'], RESPONSE['request_id'],
+                            RESPONSE['request_status'], x.repo())
+
+'''Helpers'''
+
+
+@pytest.fixture(name='x_get_pri')
+def get_priority_list_fixture():
+    with patch.object(RequestAgent, '_get_priority_list') as x:
+        yield x
+
+
+@pytest.fixture(name='x_req_up')
+def request_update_request_fixture():
+    with patch.object(RequestAgent, '_update_request') as x:
+        yield x
+
+
+@pytest.fixture(name='x_update_request')
+def update_request_fixture():
+    with patch.object(ResponseAgent, '_update_request') as x:
+        yield x
+
+
+@pytest.fixture(name='x_get_st')
+def get_request_status_by_url_fixture():
+    with patch.object(ResponseAgent, '_get_request_status_by_url') as x:
+        yield x
+
+
+@pytest.fixture(name='x_post_obj')
+def post_to_bt_fixture():
+    with patch.object(RequestAgent, '_post_to_bt') as x:
+        yield x
+
+
+@pytest.fixture(name='x_get_pri_int')
+def get_priority_list_by_interface_code_fixture():
+    with patch.object(RequestAgent, '_get_priority_list_by_interface_code') as x:
+        yield x
+
+
+@pytest.fixture(name='x_get_headers')
+def get_headers_fixture():
+    with patch.object(RequestAgent, '_get_headers') as x:
+        yield x
+
+
+@pytest.fixture(name='x_get_obj')
+def get_request_object_fixture():
+    with patch.object(RequestAgent, '_get_request_object') as x:
+        yield x
+
+
+@pytest.fixture(name='x_req_get_req')
+def request_get_request_fixture():
+    with patch.object(RequestAgent, '_get_request') as x:
+        yield x
+
+
+@pytest.fixture(name='x_res_get_req')
+def response_get_request_fixture():
+    with patch.object(ResponseAgent, '_get_request') as x:
+        yield x
+
+
+@pytest.fixture(name='x_copy_file')
+def copy_file_fixture():
+    with patch.object(ResponseAgent, 'copy_file') as x:
+        yield x
+
+
+@pytest.fixture(name='x_repo')
+def dats_bbg_batch_repo_fixture():
+    with patch(MODULE_UNDER_TEST + '.DatsBbgBatchRepo') as x:
+        yield x
+
+
+@pytest.fixture(name='x_dats_bbg_batch_seriesrepo')
+def dats_bbg_batch_series_repo_fixture():
+    with patch(MODULE_UNDER_TEST + '.DatsBbgBatchSeriesRepo') as x:
+        yield x
+
+
+@fixture(name='x', scope='function')
+def mother(x_repo, x_parse_args,
+           x_dats_bbg_batch_seriesrepo,
+           x_uri_post, x_res_get_req, x_get_pri,
+           x_get_pri_int, x_logging, x_get_obj, x_get_headers, x_get_st,
+           x_copy_file, x_update_request, x_req_get_req,
+           x_post_obj, x_req_up):
+    x_query = x_repo.query.filter().all()
+    x_query_series = x_dats_bbg_batch_seriesrepo().query.filter().all()
+    x_bbg_program_code = x_repo.query.filter().all().bbg_program_code
+    x_batch_id = x_repo.query.filter().all().batch_id
+    return struct(repo=x_repo, parse_args=x_parse_args,
+                  DatsBbgBatchSeriesRepo=x_dats_bbg_batch_seriesrepo,
+                  uri_post=x_uri_post, rgr=x_res_get_req,
+                  rgp=x_get_pri, gs=x_get_st,
+                  rgpi=x_get_pri_int, logging=x_logging,
+                  go=x_get_obj, gh=x_get_headers,
+                  cf=x_copy_file, query=x_query, batch_id=x_batch_id,
+                  bbg_program_code=x_bbg_program_code,
+                  ur=x_update_request, rqg=x_req_get_req,
+                  query_series=x_query_series, po=x_post_obj,
+                  rqu=x_req_up)
