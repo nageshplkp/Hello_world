@@ -1,0 +1,129 @@
+import argparse
+import json
+
+import pytest
+from mock import patch
+from pytest import fixture
+
+from bbg_ff import bbg_3
+from bbg_ff.bbg_3 import FetcherAgent, RequestAgent, ResponseAgent
+from etl.core.util import struct
+
+FETCH_INSTANCE = FetcherAgent()
+REQUEST_INSTANCE = RequestAgent()
+RESULT = ['Test', 'Test2']
+X_OPTIONS = ['REQUEST', 'POLL']
+MODULE_UNDER_TEST = 'bbg_ff.bbg_3'
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_main_method_with_valid_inputs(x, options):
+    x.parse_args.return_value = argparse.Namespace(action=options)
+    test_result = bbg_3.main()
+    assert test_result == 0
+
+
+def test_request_run_method_exception(x):
+    x.parse_args.return_value = argparse.Namespace(action='REQUEST')
+    x.rgp.return_value = [x.query]
+    x.DatsBbgBatchSeriesRepo().list_by_batch_id().side_effect = RuntimeError
+    bbg_3.main()
+    with pytest.raises(Exception):
+        RequestAgent.run()
+
+
+def test_main_exit_with_exception_when_input_not_in_options(x):
+    x.parse_args.return_value = 'test'
+    with pytest.raises(Exception):
+        bbg_3.main()
+
+
+def test_get_request_invalid_option_should_return_empty_list(x):
+    result_set = FETCH_INSTANCE._get_request(x.repo, 'Invalid')
+    assert len(result_set) == 0
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_get_request_valid_input(x, options):
+    x.repo.list_by_batch_status_code.return_value = RESULT
+    result_list = FETCH_INSTANCE._get_request(x.repo, options)
+    assert isinstance(result_list, list)
+
+
+@pytest.mark.parametrize('options', X_OPTIONS)
+def test_get_request_exception(x, options):
+    x.repo.list_by_batch_status_code.side_effect = RuntimeError()
+    with pytest.raises(Exception):
+        FetcherAgent._get_request(x.repo, options)
+
+
+@pytest.mark.parametrize('x_attr', ["base_url", "description",
+                                    "response_format", "requestor_code", "username"])
+def test_request_agent_parameters(x_attr):
+    assert hasattr(REQUEST_INSTANCE, x_attr)
+
+
+def test_main_method_run_method_throws_exception(x):
+    x.parse_args.return_value = argparse.Namespace(action='POLL')
+    x.repo.side_effect = RuntimeError()
+    with pytest.raises(Exception):
+        bbg_3.main()
+
+
+def test_request_get_request_call(x):
+    REQUEST_INSTANCE.run()
+    x.rqg.assert_called_with(x.repo(), 'REQUEST')
+
+
+def test_get_priority_list_call(x):
+    result = x.rqg()
+    REQUEST_INSTANCE.run()
+    x.rgp.assert_called_with(result)
+
+
+def test_request_update_request_call(x):
+    x.rgp.return_value = [x.query]
+    x.po.return_value = RESPONSE
+    REQUEST_INSTANCE.run()
+    x.rqu.assert_called_with(x.query.batch_id, '19910', 'SUCCESS', str(x.go()),
+                             'SENT_TO_BT', x.repo())
+
+
+@pytest.fixture(name='x_repo')
+def dats_bbg_batch_repo_fixture():
+    with patch(MODULE_UNDER_TEST + '.DatsBbgBatchRepo') as x:
+        yield x
+
+
+@pytest.fixture(name='x_dats_bbg_batch_seriesrepo')
+def dats_bbg_batch_series_repo_fixture():
+    with patch(MODULE_UNDER_TEST + '.DatsBbgBatchSeriesRepo') as x:
+        yield x
+
+
+@pytest.fixture(name='x_etl_config_repo')
+def etl_config_repo_fixture():
+    with patch(MODULE_UNDER_TEST + '.EtlConfigRepo') as x:
+        yield x
+
+
+@pytest.fixture(name='x_get_pri')
+def get_priority_list_fixture():
+    with patch.object(RequestAgent, '_get_priority_list') as x:
+        yield x
+
+
+@pytest.fixture(name='x_req_get_req')
+def request_get_request_fixture():
+    with patch.object(RequestAgent, '_get_request') as x:
+        yield x
+
+
+@fixture(name='x', scope='function')
+def mother(x_parse_args, x_repo, x_get_pri, x_dats_bbg_batch_seriesrepo,
+           x_req_get_req, x_etl_config_repo):
+    x_query = x_repo.list_by_batch_status_code()
+    return struct(parse_args=x_parse_args, repo=x_repo,
+                  rgp=x_get_pri, query=x_query,
+                  DatsBbgBatchSeriesRepo=x_dats_bbg_batch_seriesrepo,
+                  rqg=x_req_get_req, EtlConfigRepo=x_etl_config_repo)
