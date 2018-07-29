@@ -1,0 +1,11 @@
+def _get_headers(self,obj):
+
+        headers = {}
+        header_list = ['PROGRAMFLAG','COMPRESS', 'FIRMNAME','PROGRAMNAME','USERNUMBER']
+        gh_range = str(obj.asof_start_date_key) + "|" + str(obj.asof_end_date_key)
+        pc_dict = {GETDATA: [GETDATA.lower()],GETHISTORY: [GETHISTORY.lower(), gh_range]}
+        if obj.bbg_program_code == GETHISTORY:
+            headers['DATERANGE'] = pc_dict[obj.bbg_program_code][1]
+        for i in header_list:
+            headers[i] = EtlConfigRepo.instance.get_by_config_code(i).config_value
+        return headers
