@@ -1,0 +1,28 @@
+    def _validate_tag_csv(self, file_path):
+        # with open(file_path,) as f:
+        #     reader = csv.reader(f)
+        #     first = True
+        #     values =[]
+        #     for row in reader:
+        #         if first:
+        #             index = row.index('REQUESTOR_TAG')
+        #             first = False
+        #         else:
+        #             if row[index].startswith("##") and row[index].endswith("##"):
+        #                 row[index] = row[2:-2]
+        #
+        #         values.append(row)
+        #     csv.writer(f).writerows(reader)
+
+
+        df = pandas.read_csv(file_path, error_bad_lines=False)
+        values = []
+        print(len(df[self.TAG_COLUMN_NAME]))
+        for column in df[self.TAG_COLUMN_NAME]:
+            if column.startswith("##") and column.endswith("##"):
+                column = column[2:-2]
+            values.append(column)
+        df[self.TAG_COLUMN_NAME] = values
+        df.to_csv(file_path, index=False, quoting=csv.QUOTE_ALL)
+
+    def write
