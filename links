@@ -1,0 +1,46 @@
+#https://github.com/joshlove/nppp-autosys-jil
+
+
+
+#!/usr/bin/env python
+import sys, re, tempfile
+import csv
+in_file = open(r'C:\Users\pachimat\Desktop\test\2B3F000~.JIL', "r")
+target_file = open(r'C:\Users\pachimat\Desktop\test\lame.JIL', "w")
+out_file = open(r'C:\Users\pachimat\Desktop\test\jil2csv.csv', "w")
+
+# Preprocessing
+for line in in_file:
+    line = line.replace('job_type:', '\njob_type:')  # Moves job type to its own line
+    line = line.replace("\r\n", "\n")  # Converts to Unix line endings
+    line = re.sub('^ |\t', '', line)  # rips off only leading spaces/tabs (newlines are needed)
+    target_file.write(line)
+in_file.close()
+target_file.write("\n")  # ensures the last job is appended
+target_file.seek(0)
+
+lists = []
+with open(r'C:\Users\pachimat\Desktop\test\lame.JIL', "r") as f:
+    for line in f:
+        lists.append(line.rstrip())
+tame = [x for x in lists if " " in x and "/* -----" not in x]
+
+final_list = []
+# Convert String to Dict
+
+for key_val in tame:
+    key, _, val = key_val.partition(':')
+    temp = "{"+"'" + key + "'" + " " + _ + " " + "'" + val + "'"+"}"
+    # temp = str('{'+key+_+val+'}')
+    import ast
+    final_list.append(ast.literal_eval(temp))
+
+# d = {}
+# for k in final_list[0].iterkeys():
+#     d[k] = tuple(d[k] for d in final_list)
+# print d
+
+import pandas
+df = pandas.DataFrame(final_list)
+df.drop_duplicates()
+df.to_csv(r'C:\Users\pachimat\Desktop\test\test_2.csv', index=False, quoting=csv.QUOTE_ALL)
