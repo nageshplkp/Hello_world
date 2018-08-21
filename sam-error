@@ -1,0 +1,105 @@
+Environment:
+
+
+Request Method: GET
+Request URL: http://127.0.0.1:8000/bbg_transport/btrequest/?q=DA.PIMCOLIVE.DEV&o=2.-1
+
+Django Version: 1.10.6
+Python Version: 2.7.13
+Installed Applications:
+['suit',
+ 'django.contrib.admin',
+ 'django.contrib.auth',
+ 'django.contrib.contenttypes',
+ 'django.contrib.sessions',
+ 'django.contrib.messages',
+ 'django.contrib.staticfiles',
+ 'core.django',
+ 'bbg_transport',
+ 'cor_cmref',
+ 'fnd_cfdw',
+ 'intex',
+ 'pim_da',
+ 'pim_dais',
+ 'pim_de']
+Installed Middleware:
+['django.middleware.security.SecurityMiddleware',
+ 'django.contrib.sessions.middleware.SessionMiddleware',
+ 'django.middleware.common.CommonMiddleware',
+ 'django.middleware.csrf.CsrfViewMiddleware',
+ 'django.contrib.auth.middleware.AuthenticationMiddleware',
+ 'django.contrib.messages.middleware.MessageMiddleware',
+ 'django.middleware.clickjacking.XFrameOptionsMiddleware']
+
+
+
+Traceback:
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\core\handlers\exception.py" in inner
+  42.             response = get_response(request)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\core\handlers\base.py" in _legacy_get_response
+  249.             response = self._get_response(request)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\core\handlers\base.py" in _get_response
+  187.                 response = self.process_exception_by_middleware(e, request)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\core\handlers\base.py" in _get_response
+  185.                 response = wrapped_callback(request, *callback_args, **callback_kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\options.py" in wrapper
+  544.                 return self.admin_site.admin_view(view)(*args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\utils\decorators.py" in _wrapped_view
+  149.                     response = view_func(request, *args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\views\decorators\cache.py" in _wrapped_view_func
+  57.         response = view_func(request, *args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\sites.py" in inner
+  211.             return view(request, *args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\utils\decorators.py" in _wrapper
+  67.             return bound_func(*args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\utils\decorators.py" in _wrapped_view
+  149.                     response = view_func(request, *args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\utils\decorators.py" in bound_func
+  63.                 return func.__get__(self, type(self))(*args2, **kwargs2)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\options.py" in changelist_view
+  1544.                 self.list_max_show_all, self.list_editable, self,
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\views\main.py" in __init__
+  78.         self.queryset = self.get_queryset(request)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\views\main.py" in get_queryset
+  346.         qs, search_use_distinct = self.model_admin.get_search_results(request, qs, self.query)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\contrib\admin\options.py" in get_search_results
+  905.                 queryset = queryset.filter(reduce(operator.or_, or_queries))
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\query.py" in filter
+  796.         return self._filter_or_exclude(False, *args, **kwargs)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\query.py" in _filter_or_exclude
+  814.             clone.query.add_q(Q(*args, **kwargs))
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\sql\query.py" in add_q
+  1227.         clause, _ = self._add_q(q_object, self.used_aliases)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\sql\query.py" in _add_q
+  1247.                     current_negated, allow_joins, split_subq)
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\sql\query.py" in _add_q
+  1253.                     allow_joins=allow_joins, split_subq=split_subq,
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\sql\query.py" in build_filter
+  1178.             lookup_class = field.get_lookup(lookups[0])
+
+File "C:\Users\pachimat\batch-svn\lib\site-packages\django\db\models\fields\related.py" in get_lookup
+  694.             raise TypeError('Related Field got invalid lookup: %s' % lookup_name)
+
+Exception Type: TypeError at /bbg_transport/btrequest/
+Exception Value: Related Field got invalid lookup: icontains
