@@ -1,0 +1,5 @@
+from etl.repo.pim_da import DatsBtReqRepo
+
+ins = DatsBtReqRepo().instance.model(dats_bt_req_id=213, bt_request_id=2132, bt_status_code='Initial',
+                                     bt_request_payload='{234}', bt_response_file_path='sdadsa')
+DatsBtReqRepo().save(ins)
