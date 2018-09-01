@@ -40,10 +40,10 @@ class BtClientConfigBase:
     CODES = Code
 
     @abstractmethod
-    def __init__(self, app_code):
+    def __init__(self):
         logging.info('Initiating BtClientConfigBase...')
         self._app_config_repo = None
-        self._app_code = app_code
+        self._app_code = 'DATS_VALIDATION'
 
     @property
     def app_config_repo(self):
@@ -74,6 +74,10 @@ class BtClientConfigBase:
     @property
     def program_code(self):
         return self.cfg_dict.get(Code.BT_PROGRAM_CODE)
+
+    @property
+    def program_flag(self):
+        return self.cfg_dict.get(Code.PROGRAMFLAG)
 
     @property
     def interface_code(self):
