@@ -1,0 +1,257 @@
+import logging
+import os
+import json
+import getpass
+import pandas as pd
+from etl.core.util import parse_args
+import sys
+from etl.repo.pim_da import DatsBbgSeriesReqRepo
+from etl.bbg_transport.dto import RequestDataItem, RequestItem, RequestOptionItem
+from etl.enum.pim_da.gen.bbg_program import BbgProgramEnum
+from etl.core.util import uri_get, uri_post
+from etl.repo.fnd_cfdw.etl_app_config import EtlAppConfigRepo
+from etl.repo.pim_da import DatsBbgSeriesinBtReqRepo, DatsBtReqRepo
+from etl.enum.pim_da.gen.dats_series_req_status import DatsSeriesReqStatusEnum
+from etl.enum.cor_da.gen.bt_status import BtStatusEnum
+USAGE = ['DATS BBG Agent', ['option', {'help': 'REQUEST or POLL'}]]
+
+GETDATA = BbgProgramEnum.GETDATA.value
+GETHISTORY = BbgProgramEnum.GETHISTORY.value
+
+SUCCESS = BtStatusEnum.SUCCESS.value
+PENDING = BtStatusEnum.PENDING .value
+INITIAL = BtStatusEnum.INITIAL.value
+BTERROR = BtStatusEnum.BTERROR.value
+BBGEEROR = BtStatusEnum.BBGERROR.value
+
+NEW = DatsSeriesReqStatusEnum.NEW.value
+MIS = DatsSeriesReqStatusEnum.MIS.value
+REC = DatsSeriesReqStatusEnum.REC.value
+DER = DatsSeriesReqStatusEnum.DER.value
+SUB = DatsSeriesReqStatusEnum.SUB.value
+
+
+class FetcherAgent(object):
+    def __init__(self):
+        self.log = logging.getLogger("{}".format(
+            os.path.splitext(os.path.basename(__file__))[0]))
+        self.username = getpass.getuser()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if exc_type is None:
+            pass
+
+    def get_request(self):
+        pass
+
+    def update_request(self, bt_request_id=None, bt_status_code=None,
+                       bt_request_payload=None, dats_request_id=None):
+        pass
+
+    @staticmethod
+    def _get_config(config_code):
+        config_objs = EtlAppConfigRepo().list_by_app_code('DATS_BATCH')
+        batch_config = {config.config_code: config.config_value for config in config_objs}
+        return batch_config.get(config_code)
+
+
+class RequestAgent(FetcherAgent):
+    def __init__(self):
+        super(RequestAgent, self).__init__()
+
+    def get_request(self):
+        try:
+            logging.info('Acquiring requests from DATS_BBG_SERIES_REQ table')
+            data = DatsBbgSeriesReqRepo().list_by_series_req_status_code(NEW)
+            return data
+        except Exception as err:
+            logging.exception(err.message)
+
+    @staticmethod
+    def get_batch(data):
+        rows = []
+        for i in data:
+            rows.append(i.__dict__)
+        df = pd.DataFrame(rows)
+        df = df.drop('_sa_instance_state', axis=1)
+
+        grouped_df = df.groupby(['data_start_date_key', 'data_end_date_key', 'bbg_program_code', 'bbg_interface_code'])
+        return grouped_df
+
+    def get_request_object(self, batch):
+        logging.info('Preparing the Request Object')
+        data_items = [RequestDataItem(tag=row.dats_code, bbg_query=row.bbg_query) for row in batch]
+        headers = self.get_headers(batch[0])
+        fields = self.get_request_fields(batch)
+        request_options = [RequestOptionItem(option_name=key, option_value=headers[key])
+                           for key in headers]
+        request = RequestItem(request_description=self._get_config('DATS_BT_DESCRIPTION'),
+                              requestor_code=self._get_config('DATS_BT_REQ_CODE'),
+                              program_code=batch[0].bbg_program_code,
+                              interface_code=batch[0].bbg_interface_code,
+                              response_format_code=self._get_config('DATS_BT_FORMAT'),
+                              request_data_items=data_items,
+                              request_options=request_options,
+                              request_fields=fields)
+        logging.info('Converting the Request Object to json format')
+        return json.dumps(request.to_json())
+
+    def get_headers(self, request):
+        headers = {}
+        gh_range = str(request.data_start_date_key) + "|" + str(request.data_end_date_key)
+        pc_dict = {GETDATA: [GETDATA], GETHISTORY: [GETHISTORY, gh_range]}
+        if request.bbg_program_code == GETHISTORY:
+            headers['DATERANGE'] = pc_dict[request.bbg_program_code][1]
+        headers['PROGRAMFLAG'] = self._get_config('PROGRAMFLAG')
+        headers['COMPRESS'] = self._get_config('COMPRESS')
+        headers['FIRMNAME'] = self._get_config('FIRMNAME')
+        headers['PROGRAMNAME'] = pc_dict[request.bbg_program_code][0]
+        headers['USERNUMBER'] = self._get_config('USERNUMBER')
+        return headers
+
+    @staticmethod
+    def get_request_fields(batch):
+        request_fields_list = []
+        for row in batch:
+            request_fields_list.append(row.mnemonic)
+        return list(set(request_fields_list))
+
+    def post_to_bt(self, payload):
+        base_url = self._get_config('DATS_BT_ENDPOINT')
+        try:
+            logging.info('Submitting requests to Bloomberg Transport')
+            response = uri_post(base_url + 'request_data', payload)
+            logging.info('response: %s \r\nresponse:\t%s', base_url, response)
+            return response
+        except Exception as err:
+            logging.exception(err.message)
+
+    def update_request(self, bt_request_id, bt_status_code,
+                       bt_request_payload, repo):
+        try:
+            logging.info('Updating DATS_BT_REQ TABLE with response from BT')
+            row = DatsBtReqRepo().get_by_dats_bt_req_id(repo.dats_bt_req_id)
+            row.bt_request_id = bt_request_id
+            row.bt_status_code = bt_status_code
+            row.bt_request_payload = bt_request_payload
+            DatsBtReqRepo().save(row)
+            update_row = DatsBbgSeriesReqRepo().get_by_bbg_series_req_id(repo.bbg_series_req_id)
+            update_row.series_req_status_code = SUB
+        except Exception as err:
+            logging.exception(
+                'update_requests: ' +
+                err.message)
+            return False
+        else:
+            return True
+
+    def submit_to_bt(self, batches):
+        for batch in batches:
+            payload = self.get_request_object(batch)
+            response = self.post_to_bt(payload)
+            row = DatsBbgSeriesinBtReqRepo().get_by_dats_bbg_series_bt_id(batch.bbg_series_req_id)
+            self.update_request(response['request_id'],
+                                str(response['request_status']),
+                                str(payload), row)
+
+    def run(self):
+        data = self.get_request()
+        batches = self.get_batch(data)
+        self.submit_to_bt(batches)
+
+
+class ResponseAgent(FetcherAgent):
+
+    def __init__(self):
+        super(ResponseAgent, self).__init__()
+
+    def get_request(self):
+        try:
+            logging.info('Acquiring requests from DATS_BBG_SERIES_REQ table')
+            data = DatsBtReqRepo().get_by_bt_status_code(INITIAL or PENDING)
+            return data
+        except Exception as err:
+            logging.exception(err.message)
+
+    def get_request_status_by_url(self, obj):
+        base_url = self._get_config('DATS_BT_ENDPOINT')
+        logging.info('Sending the check status request to BT')
+        logging.info('GET: %s, \r\n\t%s', base_url, str(obj.bt_request_id))
+        try:
+            response = uri_get(base_url + 'check_status' + '/' + str(obj.bt_request_id))
+            logging.info('response: %s \r\nresponse:\t%s', base_url, response)
+            return response
+        except Exception as ex:
+            logging.error(ex)
+
+    @staticmethod
+    def get_tags(row):
+        dict_ = json.loads(row.bt_request_payload)
+        return [x['tag'] for x in dict_['request_data_items']]
+
+    @staticmethod
+    def update_requests(dats_bt_req_id, bt_status_code, bt_response_file_path=None):
+        try:
+            logging.info('Updating DATS_BT_REQ TABLE with response from BT')
+            row = DatsBtReqRepo().get_by_dats_bt_req_id(dats_bt_req_id)
+            row.bt_status_code = bt_status_code
+            row.bt_response_file_path = bt_response_file_path
+            DatsBtReqRepo().save(row)
+        except Exception as err:
+            logging.exception(
+                '' +
+                err.message)
+            return False
+        else:
+            return True
+
+    @staticmethod
+    def series_req_status_code_update(code, bbg_series_req_id):
+        try:
+            update_row = DatsBbgSeriesReqRepo().get_by_bbg_series_req_id(bbg_series_req_id)
+            update_row.series_req_status_code = code
+        except Exception as err:
+            logging.exception(
+                '' +
+                err.message)
+
+    def validation(self, path, row):
+        try:
+            df = pd.read_csv(path)
+            tags = self.get_tags(row)
+            for tag in tags:
+                if tag not in df['REQUESTOR_TAG'].tolist():
+                    self.series_req_status_code_update(MIS, row.bbg_series_req_id)
+                elif df.loc[df['REQUESTOR_TAG'] == tag, 'ROW_STATUS'].iloc[0] != 0:
+                    self.series_req_status_code_update(DER, row.bbg_series_req_id)
+                else:
+                    self.series_req_status_code_update(REC, row.bbg_series_req_id)
+        except Exception as err:
+            logging.exception('update_requests: ' + err.message)
+            return False
+        else:
+            return True
+
+    def run(self):
+        rows = self.get_request()
+        for row in rows:
+            response = self.get_request_status_by_url(row)
+            if response['request_status'] == SUCCESS:
+                self.update_requests(row.dats_bt_req_id, response['request_status'], response['bt_response_file_path'])
+                self.validation(response['data_file_path'], row)
+            else:
+                self.update_request(row.dats_bt_req_id, response['request_status'], None)
+
+if __name__ == '__main__':
+    args = parse_args(*USAGE).option.upper()
+    if args == 'REQUEST':
+        agent = RequestAgent()
+    elif args == 'POLL':
+        agent = ResponseAgent()
+    else:
+        raise RuntimeError('Unknown option specified: {}'.format(args))
+    with agent.run() as x:
+        sys.exit(x)
