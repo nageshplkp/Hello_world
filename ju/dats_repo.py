@@ -62,7 +62,7 @@ class DatsBbgRequest:
                  req_ticker=None, req_yellow_key=None, req_mnemonic=None,
                  req_bbg_interface_code=None, req_pricing_source=None,
                  req_overrides=None, req_optional_elements=None, req_tag=None,
-                 bt_request_id=None):
+                 req_is_register_series=None, bt_request_id=None):
         self.dats_bbg_request_id = dats_bbg_request_id
         self.dats_bbg_request_status_code = dats_bbg_request_status_code
         self.req_ticker = req_ticker
@@ -72,6 +72,7 @@ class DatsBbgRequest:
         self.req_pricing_source = req_pricing_source
         self.req_overrides = req_overrides
         self.req_optional_elements = req_optional_elements
+        self.req_is_register_series = req_is_register_series
         self.req_tag = req_tag
         self.bt_request_id = bt_request_id
 
@@ -86,6 +87,7 @@ class DatsBbgRequest:
             'req_pricing_source': self.req_pricing_source,
             'req_overrides': self.req_overrides,
             'req_optional_elements': self.req_optional_elements,
+            'req_is_register_series': self.req_is_register_series,
             'req_tag': self.req_tag,
             'bt_request_id': self.bt_request_id
         }
@@ -105,16 +107,17 @@ class DatsProvider(DatsRepoBase):
         super(DatsProvider, self).__init__()
 
     @staticmethod
-    def to_bbg_query(req_ticker, req_yellow_key, req_pricing_source):
-        sec = req_ticker + ' ' + req_yellow_key
-        if req_pricing_source:
-            return sec + ' ' + req_pricing_source
-        else:
-            return sec
+    def to_bbg_query(req_ticker, req_yellow_key, req_overrides='UND',
+                     req_optional_elements='UND'):
+        query = req_ticker + ' ' + req_yellow_key
+        if req_overrides != 'UND' and len(req_overrides) > 1:
+            query = query + '|' + req_overrides
+        if req_optional_elements != 'UND' and len(req_optional_elements) > 1:
+            query = query + '|' + req_optional_elements
+        return query
 
-    def to_dats_code(self, req_ticker, req_yellow_key, req_pricing_source,
-                     req_mnemonic):
-        return (self.to_bbg_query(req_ticker, req_yellow_key, req_pricing_source)
+    def to_dats_code(self, req_ticker, req_yellow_key, req_mnemonic):
+        return (self.to_bbg_query(req_ticker, req_yellow_key)
                 + ' ' + req_mnemonic + ' ' + PROVIDER).replace(' ', '-')
 
     @cached_property
@@ -134,7 +137,10 @@ class DatsProvider(DatsRepoBase):
 
     def save_dats_bbg_request(self, requests):
         dict_requests = requests.to_dict('records')
-        self._dats_bbg_request_repo_.update_all(dict_requests)
+        dict_reqs_lower = [{k.lower(): v for k, v in d.items()}
+                           for d in dict_requests]
+
+        self._dats_bbg_request_repo_.update_all(dict_reqs_lower)
 
     def update_dats_bbg_request(self, requests, status_to,
                                 bt_request_id, public_msg=None):
@@ -143,9 +149,13 @@ class DatsProvider(DatsRepoBase):
         self._dats_bbg_request_repo_.update(request_ids, status_to,
                                             bt_request_id, public_msg)
 
-    def list_dats_bbg_request_by_status(self, status, num):
-        requests = self._dats_bbg_request_repo_. \
-            list_by_dats_bbg_request_status_code_limit(status.value, num).all()
+    def list_dats_bbg_request_by_status(self, status, num, has_pricing_source):
+        if has_pricing_source:
+            requests = self._dats_bbg_request_repo_. \
+                list_by_dats_bbg_request_status_code_limit_has_ps(status.value, num).all()
+        else:
+            requests = self._dats_bbg_request_repo_. \
+                list_by_dats_bbg_request_status_code_limit_no_ps(status.value, num).all()
         return requests
 
     def get_by_bt_request_id(self, status, limit):
