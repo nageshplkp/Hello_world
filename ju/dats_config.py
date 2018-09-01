@@ -23,6 +23,10 @@ class BbgTransportErrorStatus(Exception):
     pass
 
 
+class BbgTransport404Status(Exception):
+    pass
+
+
 class DatsBtClientConfig(BtClientConfigBase):
     """
     This sub-class adds DATS specific configs on top of base config
@@ -32,12 +36,11 @@ class DatsBtClientConfig(BtClientConfigBase):
     """
     Validator Specific Configurations
     """
-    CONFIG_APP_CODE = 'DATS_VALIDATION'
     AGENT_DIRECTION_REQUEST = 'REQUEST'
-    AGENT_DIRECTION_POLLING = 'POLLING'
+    AGENT_DIRECTION_POLL = 'POLL'
 
     def __init__(self):
-        super(DatsBtClientConfig, self).__init__(self.CONFIG_APP_CODE)
+        super(DatsBtClientConfig, self).__init__()
 
     @staticmethod
     def bt_error_status():
@@ -52,10 +55,10 @@ class DatsBtClientConfig(BtClientConfigBase):
     @property
     def bt_request_items(self):
         return {
-            self.CODES.PROGRAMFLAG.value: self.cfg_dict.get(self.CODES.PROGRAMFLAG.value),
-            self.CODES.PROGRAMNAME.value: self.cfg_dict.get(self.CODES.PROGRAMNAME.value),
-            self.CODES.USERNUMBER.value: self.cfg_dict.get(self.CODES.USERNUMBER.value),
-            self.CODES.FIRMNAME.value: self.cfg_dict.get(self.CODES.FIRMNAME.value)}
+            self.CODES.PROGRAMFLAG.value: self.cfg_dict.get(self.CODES.PROGRAMFLAG),
+            self.CODES.PROGRAMNAME.value: self.cfg_dict.get(self.CODES.PROGRAMNAME),
+            self.CODES.USERNUMBER.value: self.cfg_dict.get(self.CODES.USERNUMBER),
+            self.CODES.FIRMNAME.value: self.cfg_dict.get(self.CODES.FIRMNAME)}
 
     @staticmethod
     def get_mandatory_mnemonics():
