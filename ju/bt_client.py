@@ -3,11 +3,14 @@ import io
 import json
 import logging
 import numpy as np
+from core.rest import rest_config
 import sys
 import time
-from dats_config import \
-    BbgTransportForbidden, BbgTransportUnknown, BbgTransportErrorStatus
 from core.rest.client import ClientException
+from dats_config import \
+    BbgTransportForbidden, BbgTransportUnknown, BbgTransportErrorStatus,\
+    BbgTransport404Status
+from dats_repo import DatsProvider
 from etl.core.util import uri_post, uri_get
 from etl.core.timed import timed
 from etl.bbg_transport.dto import RequestDataItem, RequestItem, \
@@ -51,25 +54,32 @@ class BtClient:
                      self.end_time)
 
     @staticmethod
-    def _get_data_items(dats_bbg_requests):
-        return [RequestDataItem(bbg_query=r.req_ticker + ' ' + r.req_yellow_key,
+    def _get_data_items(requests):
+        provider = DatsProvider
+        return [RequestDataItem(bbg_query=provider.to_bbg_query(r.req_ticker,
+                                                                r.req_yellow_key,
+                                                                r.req_overrides,
+                                                                r.req_optional_elements),
                                 tag=str(r.dats_bbg_request_id))
-                for r in dats_bbg_requests]
+                for r in requests]
 
     def _get_fields(self, requests):
         req_mnemonics = [r.req_mnemonic for r in requests]
         req = np.unique(req_mnemonics)
         return np.append(req, self.bt_request_fields).tolist()
 
-    @property
-    def _options(self):
-        return [RequestOptionItem(key, val)
-                for (key, val) in self.bt_request_items.items()]
+    def _options(self, has_pricing_source):
+        options = [RequestOptionItem(key, val)
+                   for (key, val) in self.bt_request_items.items()]
+        if has_pricing_source:
+            options.append(RequestOptionItem(option_name='EXCLUSIVE_PRICING_SRC',
+                                             option_value='yes'))
+        return options
 
-    def get_request_item(self, req):
-        data_items = self._get_data_items(req)
-        fields = self._get_fields(req)
-        options = self._options
+    def get_request_item(self, requests, has_exclusive_pricing_source):
+        data_items = self._get_data_items(requests)
+        fields = self._get_fields(requests)
+        options = self._options(has_exclusive_pricing_source)
         return RequestItem(request_description=self.request_description,
                            requestor_code=self.requester_code,
                            program_code=self.program_codes,
@@ -80,42 +90,21 @@ class BtClient:
                            request_fields=fields)
 
     @timed()
-    def post_to_bbg_transport(self, req):
+    def post(self, req, has_pricing_source=False):
         """
         Call BT api [POST] and keep polling until response has complete status
         or times out
         :param req:
+        :param has_pricing_source:
         :return:
         """
         logging.info('Submitting to BT...')
-
-        json_payload = self.get_request_item(req).to_json()
+        payload = self.get_request_item(req, has_pricing_source).to_json()
         logging.info('payload size is {} bytes for {} requests'
-                     .format(self.get_size(json_payload), len(req)))
-
-        buf = io.BytesIO()
-        with gzip.GzipFile(fileobj=buf, mode='wb') as f:
-            # todo: fix this to use pypimco serialize.py
-            json.dump(json_payload, f)
-
-        zipped_payload = buf.getvalue()
-
-        logging.info('compressed payload size is {} bytes for {} requests'
-                     .format(self.get_size(zipped_payload), len(req)))
-
-        payload = zipped_payload
-
-        def gen(data):
-            for i in range(0, len(data), 1000):
-                yield data[i:i+1000]
-
-        streamer = StreamingIterator(size=len(payload), iterator=gen(payload))
+                     .format(self.get_size(payload), len(req)))
 
         try:
-            response = self._post(data=streamer,
-                                  headers={'Content-Type': 'application/json',
-                                           'Content-Encoding': 'gzip'},
-                                  is_stream=True)
+            response = self._post(payload=payload)
         except ClientException as ex:
             status = ex.detail_json.get('status')
             logging.exception('BBG Transport API call failed: ' + ex.message)
@@ -128,22 +117,55 @@ class BtClient:
         else:
             return self.handle_response(response)
 
-    def _post(self, data, headers=None, is_stream=False):
-        # todo: fix this after PyPimco client change
-        return uri_post(url=self.base_url + 'request_data', payload=data,
-                        headers=headers)
-        # return uri_post(url=self.base_url + 'request_data', payload=data,
-        #                 headers=headers, is_stream=is_stream)
+    def _post(self, payload):
+        logging.info('url: ' + self.base_url + 'request_data')
+        return uri_post(url=self.base_url + 'request_data',
+                        payload=payload) #,
+                        # headers={'Content-Encoding': 'gzip'},
+                        # request_serializer=self.stream_serializer)
 
-    def get_from_bbg_transport(self, bt_url):
+    def stream_serializer(self, data, request_schema=None):
+        """
+        Stream Serializer will compress and stream
+        :param data:
+        :return:
+        """
+        zipped_payload = self._compress(data)
+        logging.info('compressed payload size is {} bytes'
+                     .format(self.get_size(zipped_payload)))
+        return rest_config.MIME_JSON,\
+               StreamingIterator(size=len(zipped_payload),
+                                 iterator=self._gen(zipped_payload))
+
+    @staticmethod
+    def _compress(data):
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode='wb') as f:
+            json.dump(data, f)
+        return buf.getvalue()
+
+    @staticmethod
+    def _gen(data):
+        """
+        chunk generator
+        :param data:
+        :return:
+        """
+        for i in range(0, len(data), 1000):
+            yield data[i:i + 1000]
+
+    def get(self, url):
         try:
-            response = self._get(bt_url)
+            logging.info('url: ' + url)
+            response = self._get(url)
         except ClientException as ex:
             status = ex.detail_json.get('status')
             logging.exception('BBG Transport API call failed: ' + ex.message)
             if status == 403:
                 raise BbgTransportForbidden('Forbidden: ' +
                                             ex.detail_json.get('msg'))
+            elif status == 404:
+                raise BbgTransport404Status('Request Id not found')
         else:
             return self.handle_response(response)
 
@@ -168,10 +190,11 @@ class BtClient:
 
         if response['request_status'] in self.bt_error_status:
             errors = '\n'.join(
-                [i.error_text for i in response['response_file_info'] if
+                [i['error_text'] for i in response['response_file_info'] if
                  bool(i['is_error_response']) is True])
             raise BbgTransportErrorStatus('Bbg Transport Error: {}'
-                                          .format(response['request_status'], errors))
+                                          .format(response['request_status'],
+                                                  errors))
         return response
 
     def get_size(self, obj, seen=None):
@@ -187,6 +210,7 @@ class BtClient:
             size += sum([self.get_size(k, seen) for k in obj.keys()])
         elif hasattr(obj, '__dict__'):
             size += self.get_size(obj.__dict__, seen)
-        elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        elif hasattr(obj, '__iter__') and not isinstance(obj, (
+        str, bytes, bytearray)):
             size += sum([self.get_size(i, seen) for i in obj])
         return size
