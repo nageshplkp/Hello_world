@@ -1,0 +1,1 @@
+data = repo.query.filter(or_(model.bt_status_code == INITIAL, model.bt_status_code == PENDING)).all()
