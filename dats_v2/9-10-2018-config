@@ -1,0 +1,61 @@
+from bt_client_config import BtClientConfigBase
+from etl.enum.cor_da.gen.bt_status import BtStatusEnum
+from etl.enum.pim_da.gen.bbg_program import BbgProgramEnum
+from etl.enum.pim_da.gen.dats_series_req_status import DatsSeriesReqStatusEnum
+from werkzeug.utils import cached_property
+
+
+class BtBatchClientConfigBase(BtClientConfigBase):
+
+    def __init__(self):
+        super(BtBatchClientConfigBase, self).__init__()
+        self._app_code = 'DATS_BATCH'
+        self.getdata = BbgProgramEnum.GETDATA.value
+        self.gethistory = BbgProgramEnum.GETHISTORY.value
+
+        self.success = BtStatusEnum.SUCCESS.value
+        self.pending = BtStatusEnum.PENDING.value
+        self.initial = BtStatusEnum.INITIAL.value
+        self.bterror = BtStatusEnum.BTERROR.value
+        self.bbgeeror = BtStatusEnum.BBGERROR.value
+
+        self.new = DatsSeriesReqStatusEnum.NEW.value
+        self.sub = DatsSeriesReqStatusEnum.SUB.value
+        self.can = DatsSeriesReqStatusEnum.CAN.value
+
+    @cached_property
+    def cfg_dict(self):
+        codes = self.app_config_repo.list_by_app_code(self._app_code)
+        return {c.config_code: c.config_value for c in codes}
+
+    @property
+    def dats_bt_endpoint_code(self):
+        return self.cfg_dict.get('DATS_BT_ENDPOINT')
+
+    @property
+    def dats_bt_format_code(self):
+        return self.cfg_dict.get('DATS_BT_FORMAT')
+
+    @property
+    def dats_bt_req_code_code(self):
+        return self.cfg_dict.get('DATS_BT_REQ_CODE')
+
+    @property
+    def dats_bt_file_path_code(self):
+        return self.cfg_dict.get('DATS_BT_FILE_PATH')
+
+    @property
+    def dats_bt_description(self):
+        return self.cfg_dict.get('DATS_BT_DESCRIPTION')
+
+    @property
+    def dats_b_max_retry(self):
+        return self.cfg_dict.get('DATS_B_MAX_RETRY')
+
+    @property
+    def get_default_headers(self):
+        return {
+            self.CODES.PROGRAMFLAG.value: self.cfg_dict.get('PROGRAMFLAG'),
+            self.CODES.PROGRAMNAME.value: self.cfg_dict.get('PROGRAMNAME'),
+            self.CODES.USERNUMBER.value: self.cfg_dict.get('USERNUMBER'),
+            self.CODES.FIRMNAME.value: self.cfg_dict.get('FIRMNAME')}
