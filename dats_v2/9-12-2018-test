@@ -1,0 +1,92 @@
+from dats.bbg.agent_bt import RequestAgent, ResponseAgent, FetcherAgent
+from etl.core.util import struct
+import pytest
+import pandas as pd
+import numpy as np
+
+
+def test_request_get_request_exception(mocker):
+    x_repo = mocker.patch('dats.bbg.agent_bt' + '.DatsBbgSeriesReqRepo')
+    x_repo.return_value.list_by_series_req_status_code.side_effect = Exception
+    with pytest.raises(Exception):
+        RequestAgent()._get_request()
+
+
+def test_get_header_options_list():
+    df = pd.DataFrame.from_dict({'A': [123], 'header_options_list': ['Test=Test']})
+    expected = {'Test': 'Test'}
+    assert RequestAgent._get_header_options_list(df) == expected
+
+
+def test_get_headers(mocker):
+    mocker.patch.object(RequestAgent, 'get_default_headers')
+    RequestAgent.return_value.get_default_headers.return_value = {}
+    mocker.patch.object(RequestAgent, '_get_header_options_list').return_value = {'Test': 'Test'}
+    df = pd.DataFrame.from_dict({'data_start_date_key': [123], 'data_end_date_key': '211',
+                                 'bbg_program_code': 'GETHISTORY', 'header_options_list': ['Test=Test']})
+    print RequestAgent()._get_headers(df)
+
+
+def test_series_req_status_code_update_exception(mocker):
+    x_repo = mocker.patch('dats.bbg.agent_bt' + '.DatsBbgSeriesReqRepo')
+    x_repo.return_value.get_by_bbg_series_req_id.side_effect = Exception
+    with pytest.raises(Exception):
+        RequestAgent().series_req_status_code_update('SUB', 1234)
+
+
+def test_check_retry_count(mocker):
+    x_repo = mocker.patch('dats.bbg.agent_bt' + '.DatsBbgSeriesReqRepo')
+    assert RequestAgent().check_retry_count([x_repo]) == [x_repo]
+
+
+def test_check_retry_count_with_retry_count_greater_six(mocker):
+    mocker.patch('dats.bbg.agent_bt' + '.DatsBbgSeriesReqRepo')
+    give_list = [struct(retry_count=6, bbg_series_req_id=123),
+                 struct(retry_count=5, bbg_series_req_id=124),
+                 struct(retry_count=3, bbg_series_req_id=125)]
+    assert len(RequestAgent().check_retry_count(give_list)) == 2
+
+
+def test_check_retry_count_with_retry_count_less_then_six(mocker):
+    mocker.patch('dats.bbg.agent_bt' + '.DatsBbgSeriesReqRepo')
+    give_list = [struct(retry_count=1, bbg_series_req_id=123),
+                 struct(retry_count=5, bbg_series_req_id=124),
+                 struct(retry_count=3, bbg_series_req_id=125)]
+    assert len(RequestAgent().check_retry_count(give_list)) == 3
+
+
+def test_get_batch_with_same_values():
+    data = [struct(data_start_date_key=213434, data_end_date_key=31233, bbg_program_code='GETDATA',
+                   bbg_interface_code='DL', header_options_list='Test', overrides_list='Test', is_full=0),
+            struct(data_start_date_key=213434, data_end_date_key=31233, bbg_program_code='GETDATA',
+                   bbg_interface_code='DL', header_options_list='Test', overrides_list='Test', is_full=0)]
+    assert len(RequestAgent().get_batch(data).groups) == 1
+
+
+def test_get_batch_with_diff_values():
+    data = [struct(data_start_date_key=213432, data_end_date_key=31236, bbg_program_code='GETHISTORY',
+                   bbg_interface_code='SAPI', header_options_list='Test1', overrides_list='Test2', is_full=1),
+            struct(data_start_date_key=213434, data_end_date_key=31233, bbg_program_code='GETDATA',
+                   bbg_interface_code='DL', header_options_list='Test', overrides_list='Test', is_full=0)]
+    assert len(RequestAgent().get_batch(data).groups) == 2
+
+
+def test_spilt_df_with_row_greater_than_five_thousand():
+    df = pd.DataFrame(np.random.randint(0, 100, size=(5001, 1)))
+    assert len(RequestAgent().spilt_df(df)) == 2
+
+
+def test_spilt_df_with_row_less_than_five_thousand():
+    df = pd.DataFrame(np.random.randint(0, 100, size=(4800, 1)))
+    assert len(RequestAgent().spilt_df(df)) == 1
+
+
+def test_response_get_request(mocker):
+    mocker.patch('dats.bbg.agent_bt' + '.DatsBtReqRepo').side_effect = Exception
+    with pytest.raises(Exception):
+        ResponseAgent()._get_request()
+
+
+def test_get_tags():
+    payload = '{"request_data_items": [{"tag": "TEST1"}, {"tag": "TEST2"},{"tag": "TEST3"}]}'
+    assert len(ResponseAgent.get_tags(payload)) == 3
