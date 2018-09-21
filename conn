@@ -1,0 +1,16 @@
+conn_info = {
+            'host': '',
+            'port': '',
+            'user': '',
+            'psw': '',
+            'service': '',
+        }
+
+        conn_str = '{user}/{psw}@{host}:{port}/{service}'.format(**conn_info)
+
+        connection = cx_Oracle.connect(conn_str)
+
+        cursor = connection.cursor()
+        sql = "select * from [table_name]" where [column_name ] = :value
+        params = dict(value= 123) or params = {'value': 123}
+        query = cursor.execute(que, params).fetchall() will give list of tuples.
