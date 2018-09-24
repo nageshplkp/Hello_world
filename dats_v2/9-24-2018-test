@@ -18,7 +18,13 @@ def test_request_get_request_exception(mocker):
         RequestAgent()._get_request()
 
 
-def test_get_header_options_list():
+def test_get_header_options_list_single_header_option():
+    df = pd.DataFrame.from_dict({'A': [123], 'header_options_list': ['Test=Test']})
+    expected = {'Test': 'Test'}
+    assert RequestAgent._get_header_options_list(df) == expected
+
+
+def test_get_header_options_list_multiple_header_option():
     df = pd.DataFrame.from_dict({'A': [123], 'header_options_list': ['Test=Test, SDJHSDGJ=DSD']})
     expected = {'Test': 'Test', 'SDJHSDGJ': 'DSD'}
     assert RequestAgent._get_header_options_list(df) == expected
