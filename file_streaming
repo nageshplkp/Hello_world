@@ -1,0 +1,30 @@
+import pandas as pd
+
+l_autosys_in_script_df = pd.DataFrame()
+
+script_df = pd.read_csv("de_script.csv", low_memory=False)
+jil_df = pd.read_csv("de_jil.csv", low_memory=False)
+
+l_autosys_in_script_df.to_csv('l_autosys_in_script_op_etl.csv', index=False)
+
+# print (jil_df.head())
+# print (script_df.head())
+l_autosys_in_script_df_index = int(-1)
+
+for script_index, script_row in script_df.iterrows():
+    for jil_index, jil_row in jil_df.iterrows():
+        _script_name = script_row["SCRIPT_NAME"]
+        _jll_command = str(jil_row["command"])
+        jil_command_parts = _jll_command.split()
+        for jil_command_part in jil_command_parts:
+            if _script_name in jil_command_part:
+                l_autosys_in_script_df_index = int(l_autosys_in_script_df_index + 1)
+                l_autosys_in_script_df.set_value(l_autosys_in_script_df_index, "JIL_ID", jil_row["JIL_ID"])
+                l_autosys_in_script_df.set_value(l_autosys_in_script_df_index, "SCRIPT_ID", script_row["SCRIPT_ID"])
+                l_autosys_in_script_df.set_value(l_autosys_in_script_df_index, "SCRIPT_NAME", _script_name)
+                l_autosys_in_script_df.set_value(l_autosys_in_script_df_index, "JIL_COMMAND", _jll_command)
+
+l_autosys_in_script_df.to_csv('l_autosys_in_script.csv', index=False, mode='a')
+
+
+
