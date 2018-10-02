@@ -1,0 +1,481 @@
+import collections
+import copy
+import csv
+import json
+import os
+
+import pandas
+
+from etl.bbg_transport.util import BbgConfig
+from etl.bbg_transport.util import BtRepoBase
+from etl.core.file_util import file_stream
+from etl.core.util import parse_args
+from etl.enum.cor_da.gen.bt_format import BtFormatEnum
+from etl.enum.pim_da.gen.bbg_program import BbgProgramEnum
+
+USAGE = ['BBG Response Parser',
+         ('--bbg_program_code', {'help': 'BBG Program [GETDATA, GETHISTORY]', 'required': True}),
+         ('--tgt_format', {'help': 'BT Format [HORIZONTAL, VERTICAL]', 'required': True}),
+         ('--source_files', {'help': 'List of response files to parse', 'required': True}),
+         ('--target_file', {'help': 'Target csv file', 'required': True}),
+         ('--columns',
+          {'help': 'List of mnemonics (use comma to separate them), e.g. "NAME,PX_LAST,PX_ASK"', 'required': True})
+         ]
+
+
+class BtParserFileInfo(object):
+    def __init__(self, file_path, error_text=None, time_started=None, time_finished=None):
+        self._file_path = file_path
+        self._error_text = error_text
+        self._time_started = time_started
+        self._time_finished = time_finished
+
+    @property
+    def file_path(self):
+        return self._file_path
+
+    @property
+    def error_text(self):
+        return self._error_text
+
+    @error_text.setter
+    def error_text(self, value):
+        self._error_text = value
+
+    @property
+    def is_error_file(self):
+        return bool(self.error_text)
+
+    @property
+    def time_started(self):
+        return self._time_started
+
+    @time_started.setter
+    def time_started(self, value):
+        self._time_started = value
+
+    @property
+    def time_finished(self):
+        return self._time_finished
+
+    @time_finished.setter
+    def time_finished(self, value):
+        self._time_finished = value
+
+
+class BtParserResult(object):
+    def __init__(self):
+        self._file_info = []
+        self._data_file_path = None
+
+    @property
+    def is_success(self):
+        return all([not f.is_error_file for f in self.file_info])
+
+    @property
+    def file_info(self):
+        return self._file_info
+
+    @property
+    def error_text(self):
+        errors = [f.error_text for f in self.file_info if f.is_error_file]
+        return None if len(errors) < 1 else '\n'.join(errors)
+
+    @property
+    def data_file_path(self):
+        return self._data_file_path
+
+    @data_file_path.setter
+    def data_file_path(self, value):
+        self._data_file_path = value
+
+    def get_file_info(self, file_path):
+        [f] = (fi for fi in self.file_info if fi.file_path == file_path)
+        return f
+
+    def bbg_time_started(self, file_path):
+        return self.get_file_info(file_path).time_started
+
+    def bbg_time_finished(self, file_path):
+        return self.get_file_info(file_path).time_finished
+
+
+class BtParser(BtRepoBase):
+    TAG_COLUMN_NAME = 'REQUESTOR_TAG'
+    SECURITY_COLUMN_NAME = 'SECURITY'
+    DATE_COLUMN_NAME = 'ASOF_DATE'
+    COUNT_COLUMN_NAME = 'NUM_OF_FIELDS'
+    STATUS_COLUMN_NAME = 'ROW_STATUS'
+
+    class Field:
+        def __init__(self, position, name, is_id=False):
+            self.position = position
+            self.name = name
+            self.is_id = is_id
+
+    class Data:
+        def __init__(self):
+            pass
+
+    def __init__(self, program_code, tgt_format):
+        super(BtParser, self).__init__()
+        self.program_code = program_code
+        self.tgt_format = tgt_format
+        self._reset_state()
+
+    def _reset_state(self):
+        self.options = []
+        self.fields = []
+        self.data = []
+        self.file_start_time = None
+        self.file_end_time = None
+        self._bulk_format_count = 0
+        self._is_generic_cols = False
+        self._current_section = BbgConfig.FILE_SECTIONS.PRE
+        self._bulk_format_count = 0
+        self._max_cols_found = 0
+        self._is_generic_cols = False
+        self._has_tags = False
+        self._raw_data = []
+        self.pre_text = []
+        self.is_error_response = False
+
+    def get_column_headers(self):
+        rtn = [f.name for f in self.fields]
+        if BtParser.STATUS_COLUMN_NAME not in rtn:
+            rtn.append(BtParser.STATUS_COLUMN_NAME)
+        return rtn
+
+    def parse_files(self, source_files, target_file):
+        rtn = BtParserResult()
+        data = []
+        if not isinstance(source_files, list) or len(source_files) == 1:
+            file_item = self._process_file(source_files[0] if isinstance(source_files, list) else source_files)
+            rtn.file_info.append(file_item)
+            if file_item.is_error_file:
+                return rtn
+            data = self.data
+        else:
+            columns = None
+            for source_file in source_files:
+                file_item = self._process_file(source_file)
+                rtn.file_info.append(file_item)
+                if file_item.is_error_file:
+                    return rtn
+                if not self.data or len(self.data) < 1:
+                    continue
+                if not columns:
+                    columns = self.get_column_headers()
+                elif not self._validate_columns_match(columns, self.get_column_headers()):
+                    raise RuntimeError("Inconsistent source columns found")
+                data.extend(self.data)
+        self.write_data_to_file(target_file, self._get_csv_columns(), data)
+        rtn.data_file_path = target_file
+        return rtn
+
+    def _get_csv_columns(self):
+        if self.tgt_format == BtFormatEnum.HORIZONTAL.value:
+            return self.get_column_headers()
+        elif self.tgt_format == BtFormatEnum.VERTICAL.value:
+            rtn = [f.name for f in self.fields if f.is_id is True]
+            rtn.append(BbgConfig.VERTICAL_MNEMONIC_COLUMN)
+            rtn.append(BbgConfig.VERTICAL_DATA_COLUMN)
+            if BtParser.STATUS_COLUMN_NAME not in rtn:
+                rtn.append(BtParser.STATUS_COLUMN_NAME)
+            return rtn
+
+    def _process_file(self, file_path):
+        self._reset_state()
+        self._parse_file_into_sections(file_path)
+        if self.is_error_response:
+            return BtParserFileInfo(file_path=file_path, error_text=self.pre_text)
+        if self._is_generic_cols:
+            self._add_generic_cols()
+        else:
+            self._load_default_fields(self.program_code)
+        self._reorder_fields()
+        if self.program_code == BbgProgramEnum.GETDATA.value:
+            self._parse_get_data()
+        elif self.program_code == BbgProgramEnum.GETHISTORY.value:
+            self._parse_get_history()
+        return BtParserFileInfo(file_path=file_path, time_started=self.file_start_time,
+                                time_finished=self.file_end_time)
+
+    def _reorder_fields(self):
+        ordered = []
+        tag_offset = -1 if self._has_tags else 0
+        id_cnt = len([1 for f in self.fields if f.is_id is True])
+        for idx, field in enumerate(sorted(self.fields, key=lambda i: i.position)):
+            field.position = idx + tag_offset
+            if id_cnt == 0 and field.position == 0 and self._bulk_format_count > 0:
+                field.is_id = True
+            ordered.append(field)
+        self.fields = ordered
+
+    def _parse_file_into_sections(self, file_path):
+        for line in file_stream(file_path):
+            if not self._process_line(line):
+                break
+
+    def _process_line(self, line):
+        line = line.rstrip().rstrip('|')
+        if self._check_section_change(line):
+            if self._current_section == BbgConfig.FILE_SECTIONS.START_TIME:
+                self.file_start_time = line.split('=')[1].strip()
+            elif self._current_section == BbgConfig.FILE_SECTIONS.END_TIME:
+                self.file_end_time = line.split('=')[1].strip()
+            return True
+        elif line.isspace():
+            return True
+        elif self._current_section == BbgConfig.FILE_SECTIONS.PRE:
+            self.pre_text.append(line)
+            self.is_error_response = 'error' in line or self.is_error_response
+        elif self._current_section == BbgConfig.FILE_SECTIONS.NONE:
+            return True
+        elif self._current_section == BbgConfig.FILE_SECTIONS.OPTIONS:
+            if self.is_error_response:
+                return False
+            self.options.append(line.rstrip('\n').split('='))
+        elif self._current_section == BbgConfig.FILE_SECTIONS.FIELDS:
+            if self._is_generic_cols:
+                return True
+            field = line.rstrip('\n')
+            bulk_fields = self.bulk_fmt_repo.list_by_bulk_format_mnemonic(field)
+            field_position = 0 if len(self.fields) < 1 else max(self.fields, key=lambda i: i.position).position + 1
+            if len(bulk_fields) < 1:
+                self._add_field(field_position, field)
+            else:
+                self._bulk_format_count += 1
+                self._add_field(field_position, field)
+                field_position += 1
+                for bf in sorted(bulk_fields, key=lambda i: i.column_display_order):
+                    if bf.mnemonic is None:
+                        self._is_generic_cols = True
+                        continue
+                    field_position += 1
+                    self._add_field(field_position, '{}{}'.format(bf.mnemonic, bf.column_display_order))
+        elif self._current_section == BbgConfig.FILE_SECTIONS.DATA:
+            if line.startswith('##'):
+                self._has_tags = True
+            self._raw_data.append(line.strip('\n'))
+            self._max_cols_found = max(self._max_cols_found, len(line.split('|')))
+        return True
+
+    def _check_section_change(self, line):
+        rtn = False
+        if line == BbgConfig.FILE_TAGS.FILE_START:
+            self._current_section = BbgConfig.FILE_SECTIONS.OPTIONS
+            rtn = True
+        elif line == BbgConfig.FILE_TAGS.FILE_END:
+            self._current_section = BbgConfig.FILE_SECTIONS.NONE
+            rtn = True
+        elif line == BbgConfig.FILE_TAGS.FIELDS_START:
+            self._current_section = BbgConfig.FILE_SECTIONS.FIELDS
+            rtn = True
+        elif line == BbgConfig.FILE_TAGS.FIELDS_END:
+            self._current_section = BbgConfig.FILE_SECTIONS.NONE
+            rtn = True
+        elif line.startswith(BbgConfig.FILE_TAGS.TIME_STARTED):
+            self._current_section = BbgConfig.FILE_SECTIONS.START_TIME
+            rtn = True
+        elif line.startswith(BbgConfig.FILE_TAGS.TIME_FINISHED):
+            self._current_section = BbgConfig.FILE_SECTIONS.END_TIME
+            rtn = True
+        elif line == BbgConfig.FILE_TAGS.DATA_START:
+            self._current_section = BbgConfig.FILE_SECTIONS.DATA
+            rtn = True
+        elif line == BbgConfig.FILE_TAGS.DATA_END:
+            self._current_section = BbgConfig.FILE_SECTIONS.NONE
+            rtn = True
+        return rtn
+
+    def _load_default_fields(self, program_code):
+        if self._bulk_format_count > 0:
+            return
+        tag_idx = None
+        if program_code == BbgProgramEnum.GETDATA.value:
+            self.fields.insert(0, self.Field(0, BtParser.COUNT_COLUMN_NAME, True))
+            self.fields.insert(0, self.Field(-1, BtParser.STATUS_COLUMN_NAME, True))
+            self.fields.insert(0, self.Field(-2, BtParser.SECURITY_COLUMN_NAME, True))
+            tag_idx = -3
+        elif program_code == BbgProgramEnum.GETHISTORY.value:
+            self.fields.insert(0, self.Field(0, BtParser.DATE_COLUMN_NAME, True))
+            self.fields.insert(0, self.Field(-1, BtParser.SECURITY_COLUMN_NAME, True))
+            tag_idx = -2
+        if self._has_tags:
+            self.fields.insert(0, self.Field(tag_idx, BtParser.TAG_COLUMN_NAME, True))
+
+    def _add_generic_cols(self):
+        self.fields = []
+        idx = 0
+        if self._has_tags:
+            self._add_field(-1, BtParser.TAG_COLUMN_NAME, True)
+        while idx < self._max_cols_found:
+            self._add_field(idx, 'Col{}'.format(idx), idx == 0)
+            idx += 1
+
+    def _parse_get_data(self):
+        curr_note = None
+        for row in self._raw_data:
+            if row.startswith('##'):
+                curr_note = row
+                continue
+            row_split = row.rstrip('\n').split('|')
+            model = self.Data()
+            for f in sorted(self.fields, key=lambda i: i.position):
+                if f.is_id:
+                    val = curr_note if f.name == BtParser.TAG_COLUMN_NAME else row_split[f.position].rstrip()
+                    setattr(model, f.name, val)
+                if self.tgt_format == BtFormatEnum.HORIZONTAL.value and f.is_id is not True:
+                    setattr(model, f.name, row_split[f.position].rstrip())
+                elif self.tgt_format == BtFormatEnum.VERTICAL.value:
+                    if not f.is_id:
+                        v_model = copy.deepcopy(model)
+                        setattr(v_model, BbgConfig.VERTICAL_MNEMONIC_COLUMN, f.name)
+                        setattr(v_model, BbgConfig.VERTICAL_DATA_COLUMN, row_split[f.position].rstrip())
+                        self.data.append(v_model)
+            if self.tgt_format == BtFormatEnum.HORIZONTAL.value:
+                self.data.append(model)
+
+    def _parse_get_history(self):
+        field = ''
+        curr_note = None
+        count = 0
+        for row in self._raw_data:
+            row_split = row.rstrip('\n').rstrip('|').split('|')
+            if row_split[0].startswith('##'):
+                curr_note = row
+                continue
+            if row_split[0].startswith(BbgConfig.FILE_TAGS.SECURITY_END):
+                end_index = count
+                for i in range(start_index, end_index):
+                    try:
+                        if not row_split[3].strip():
+                            row_split[3] = '0'
+                    except IndexError:
+                        print(" Index doesn't exist in the list.... adding row_status to the list")
+                        row_split.append('0')
+                    setattr(self.data[i], BtParser.STATUS_COLUMN_NAME, row_split[3])
+                continue
+            elif row_split[0].startswith(BbgConfig.FILE_TAGS.SECURITY_START):
+                field = row_split[2]
+                start_index = count
+                continue
+            if self.tgt_format == BtFormatEnum.HORIZONTAL.value:
+                if len([self._add_history_value(i, field, row_split[2], curr_note) for i in self.data if
+                        getattr(i, BtParser.SECURITY_COLUMN_NAME) == row_split[0]
+                        and getattr(i, BtParser.DATE_COLUMN_NAME) == row_split[1]]) < 1:
+                    model = self._get_new_model()
+                    setattr(model, BtParser.SECURITY_COLUMN_NAME, row_split[0])
+                    setattr(model, BtParser.DATE_COLUMN_NAME, row_split[1])
+                    setattr(model, field, row_split[2])
+                    if curr_note is not None:
+                        setattr(model, BtParser.TAG_COLUMN_NAME, curr_note)
+                    self.data.append(model)
+            elif self.tgt_format == BtFormatEnum.VERTICAL.value:
+                model = self.Data()
+                data_idx = 0
+                for f in sorted(self.fields, key=lambda z: z.position):
+                    if f.is_id:
+                        setattr(model,
+                                f.name,
+                                curr_note if f.name == BtParser.TAG_COLUMN_NAME else row_split[f.position].rstrip())
+                        data_idx = f.position + 1
+                    else:
+                        continue
+                setattr(model, BbgConfig.VERTICAL_MNEMONIC_COLUMN, field)
+                setattr(model, BbgConfig.VERTICAL_DATA_COLUMN, row_split[data_idx])
+                self.data.append(model)
+                count += 1
+
+    @staticmethod
+    def _add_history_value(model, field, data, note):
+        setattr(model, field, data)
+        if note is not None:
+            setattr(model, BtParser.TAG_COLUMN_NAME, note)
+
+    def _get_new_model(self):
+        rtn = self.Data()
+        [setattr(rtn, i.name, None) for i in self.fields]
+        return rtn
+
+    def _add_field(self, position, field, is_id=False):
+        self.fields.append(self.Field(position, field, is_id))
+
+    @staticmethod
+    def _validate_columns_match(cols_left, cols_right):
+        if len(cols_left) != len(cols_right):
+            return False
+        for i in range(len(cols_left)):
+            if cols_left[i] != cols_right[i]:
+                return False
+        return True
+
+    def modify_requestor_tag(self, csv_file):
+        df = pandas.read_csv(csv_file)
+        if self.TAG_COLUMN_NAME in df.columns:
+            values = []
+            for column in df[self.TAG_COLUMN_NAME]:
+                if column.startswith("##") and column.endswith("##"):
+                    column = column[2:-2]
+                values.append(column)
+            df[self.TAG_COLUMN_NAME] = values
+        df.to_csv(csv_file, index=False, quoting=csv.QUOTE_ALL)
+
+    def write_data_to_file(self, target_file, columns, data):
+        with open(target_file, 'wb') as output:
+            wr = csv.DictWriter(output, fieldnames=columns, quoting=csv.QUOTE_ALL)
+            wr.writeheader()
+            wr.writerows([r.__dict__ for r in data])
+            if os.name == 'posix':
+                os.fchmod(output.fileno(), 0o777)
+        self.modify_requestor_tag(target_file)
+
+
+def json_file2csv(source_file, target_file, fmt, columns, request_type):
+    with open(source_file, 'r') as f:
+        json_str = f.read().replace('\n', '')
+        json2csv(json_str, target_file, fmt, columns, request_type)
+
+
+def json2csv(json_str, target_file, fmt, columns, request_type):
+    raw_data_dict = json.loads(json_str, object_pairs_hook=collections.OrderedDict)
+
+    if request_type == 'GETDATA':
+        df = pandas.DataFrame(columns=['security'] + columns)
+        id_vars = ['security']
+        sort_values = ['security', 'MNEMONIC']
+        for security in raw_data_dict.values():
+            df = df.append(security, ignore_index=True)
+
+    else:
+        df = pandas.DataFrame(columns=['security', 'ASOF_DATE'] + columns)
+        id_vars = ['security', 'ASOF_DATE']
+        sort_values = ['security', 'ASOF_DATE', 'MNEMONIC']
+        for security in raw_data_dict.values():
+            security_name = security.pop('security')
+            for date, fields in security.items():
+                try:
+                    df = df.append(dict(fields, ASOF_DATE=date, security=security_name), ignore_index=True)
+                except ValueError:
+                    df = df.append(dict(security='Invalid Security!'), ignore_index=True)
+
+    if fmt == BtFormatEnum.VERTICAL.value:
+        pandas.melt(df, id_vars=id_vars, var_name='MNEMONIC', value_name='VALUE'). \
+            sort_values(sort_values).to_csv(target_file, index=False)
+    else:
+        df.to_csv(target_file, index=False)
+
+
+if __name__ == '__main__':
+    args = parse_args(*USAGE)
+    bbg_program_code = args.bbg_program_code
+    tgt_fmt = args.tgt_format
+    src_files = args.source_files
+    tgt_file = args.target_file
+    cols = args.columns.split(',')
+    # check source file type/extension and run the appropriate parser
+    if src_files.lower().endswith('.txt'):
+        print(BtParser(bbg_program_code, tgt_fmt).parse_files(src_files, tgt_file))
+    elif src_files.lower().endswith('.json'):
+        json_file2csv(src_files, tgt_file, tgt_fmt, cols, bbg_program_code)
