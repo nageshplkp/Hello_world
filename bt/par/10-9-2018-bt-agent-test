@@ -1,0 +1,337 @@
+import copy
+from collections import OrderedDict
+from datetime import datetime
+
+import pytest
+from mock import ANY
+
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+import codecs
+from etl.bbg_transport.agent import payload2uri, process_sapi_request
+from etl.core.util import struct
+
+MODULE_UNDER_TEST = 'etl.bbg_transport.agent.'
+
+X_INPUT_INTERFACE_CODE1 = 'SAPI1'
+X_INPUT_INTERFACE_CODE2 = 'SAPI2'
+X_OUTPUT1_get_endpoint = 'http://ptpcore-beta:50008/ref/v2/bloomberg/serverApi?'
+# X_OUTPUT2_get_endpoint = 'http://ptpcore-beta:50008/ref/v2/bloomberg/data?'
+#
+#
+# @pytest.mark.skip
+# @pytest.mark.parametrize('interface_code, endpoint', [
+#     (X_INPUT_INTERFACE_CODE1, X_OUTPUT1_get_endpoint),
+#     (X_INPUT_INTERFACE_CODE2, X_OUTPUT2_get_endpoint)
+# ])
+# def test_get_endpoint(interface_code, endpoint):
+#     assert endpoint == get_endpoint(interface_code)
+
+
+X_ITEM_TMPL = {
+    "yellow_key": None,
+    "bb_id": None,
+    "tag": None,
+    "isin": None,
+    "cusip": None,
+    "bbg_query": None,
+    "ticker": None}
+
+X_SIMPLE_PAYLOAD = {
+    "request_data_items": [dict(X_ITEM_TMPL, cusip='594918104')],
+    "program_code": "GETDATA",
+    # XXX Test real sapi get with no mnemonics
+    "request_fields": ['TICKER', 'NAME', 'PX_BID', 'PX_MID', 'PX_ASK', 'FEED_SOURCE', 'LAST_UPDATE_DT'],
+    "interface_code": X_INPUT_INTERFACE_CODE1,
+    "request_options": [{
+        "option_name": "COMPRESS",
+        "option_value": "yes"
+    },
+        {
+            "option_name": "FIRMNAME",
+            "option_value": "pimco"
+        }
+    ]
+}
+
+X_PAYLOAD_1 = copy.deepcopy(X_SIMPLE_PAYLOAD)
+X_PAYLOAD_1['request_data_items'].append(dict(X_ITEM_TMPL, cusip='17275R102'))
+
+X_PAYLOAD_2 = copy.deepcopy(X_SIMPLE_PAYLOAD)
+X_PAYLOAD_2['request_data_items'][0] = dict(X_ITEM_TMPL, ticker="7203", yellow_key="JP Equity")
+
+X_PAYLOAD_3 = copy.deepcopy(X_SIMPLE_PAYLOAD)
+X_PAYLOAD_3['request_data_items'][0] = dict(X_ITEM_TMPL, isin='US0378331005')
+
+X_PAYLOAD_4 = copy.deepcopy(X_SIMPLE_PAYLOAD)
+X_PAYLOAD_4['request_data_items'][0] = dict(X_ITEM_TMPL, bbg_query='SPTSX60 Index')
+
+X_PAYLOAD_5 = copy.deepcopy(X_PAYLOAD_2)
+X_PAYLOAD_5['interface_code'] = X_INPUT_INTERFACE_CODE1
+
+X_PAYLOAD_6 = copy.deepcopy(X_PAYLOAD_5)
+X_PAYLOAD_6['request_data_items'].append(dict(X_ITEM_TMPL, bbg_query='EUSAVF25 ICPL Curncy|TICKER'))
+
+X_PAYLOAD_GETHISTORY = copy.deepcopy(X_PAYLOAD_1)
+X_PAYLOAD_GETHISTORY['request_options'].append({
+    "option_name": "DATERANGE",
+    "option_value": "20180109|20180514"
+})
+X_PAYLOAD_GETHISTORY['program_code'] = 'GETHISTORY'
+
+X_PAYLOAD_GETHISTORY_PERIODICITY = copy.deepcopy(X_PAYLOAD_GETHISTORY)
+X_PAYLOAD_GETHISTORY_PERIODICITY['request_options'].append({
+    "option_name": "PERIODICITY",
+    "option_value": "DAILY"
+})
+
+
+@pytest.fixture(name='fake_db_call')
+def fake_db_call_fixture(mocker):
+    x_repo = mocker.patch('etl.bbg_transport.agent.BtConfigRepo')
+    x_repo.instance.get_by_config_code_bbg_interface_code.return_value.config_value = X_OUTPUT1_get_endpoint
+    return x_repo.instance.get_by_config_code_bbg_interface_code.return_value.config_value
+
+
+@pytest.mark.parametrize('payload,uri', [
+    (X_SIMPLE_PAYLOAD, '_id=594918104%20cusip&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT'),
+    (X_PAYLOAD_1,
+     '_id=594918104%20cusip,17275R102%20cusip&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT'),
+    (X_PAYLOAD_2,
+     '_id=7203%20JP%20Equity%20TICKER&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT'),
+    (X_PAYLOAD_3, '_id=US0378331005%20isin&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT'),
+    (X_PAYLOAD_4, '_id=SPTSX60%20Index%20TICKER&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT'),
+    (X_PAYLOAD_GETHISTORY,
+     '_id=594918104%20cusip,17275R102%20cusip&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT&_startdate=2018-01-09&_enddate=2018-05-14&_periodicity=DAILY'),
+    (X_PAYLOAD_GETHISTORY_PERIODICITY,
+     '_id=594918104%20cusip,17275R102%20cusip&_fields=TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT&_startdate=2018-01-09&_enddate=2018-05-14&_periodicity=DAILY')
+])
+def test_payload2uri(fake_db_call, payload, uri):
+    assert fake_db_call + uri == payload2uri(payload)
+
+
+X_REQUEST_OBJECT_DATA = r'''{
+    "_config": null,
+    "request_options": [{
+        "option_name": "PROGRAMFLAG",
+        "option_value": "one-shot"
+    },
+    {
+        "option_name": "COMPRESS",
+        "option_value": "yes"
+    },
+    {
+        "option_name": "FIRMNAME",
+        "option_value": "pimco"
+    },
+    {
+        "option_name": "PROGRAMNAME",
+        "option_value": "GETDATA"
+    },
+    {
+        "option_name": "USERNUMBER",
+        "option_value": "183888"
+    }],
+    "_validation_errors": null,
+    "request_description": "{\"tag\": true, \"vertical\": true, \"level\": 1, \"is_bulk\": false, \"source_code\": \"BBG_DEP_BAS_ADM_1300\", \"etl_audit_id\": 69925615, \"type\": \"SECURITY\"}",
+    "request_data_items": [{
+        "cusip": null,
+        "yellow_key": null,
+        "bb_id": null,
+        "tag": "JYBB5_Curncy_#DEF#_#DEF#",
+        "isin": null,
+        "bbg_query": "JYBB5 Curncy|TICKER",
+        "ticker": null
+    },
+    {
+        "cusip": null,
+        "yellow_key": null,
+        "bb_id": null,
+        "tag": "EUSAVF25_Curncy_ICPL_#DEF#",
+        "isin": null,
+        "bbg_query": "EUSAVF25 ICPL Curncy|TICKER",
+        "ticker": null
+    },
+    {
+        "cusip": null,
+        "yellow_key": "Comdty",
+        "bb_id": null,
+        "tag": "EDM87-LAST_TRADEABLE_DT",
+        "isin": null,
+        "bbg_query": null,
+        "ticker": "EDM87"
+    },
+    {
+        "cusip": null,
+        "yellow_key": null,
+        "bb_id": null,
+        "tag": null,
+        "isin": null,
+        "bbg_query": "SPTSX60 Index",
+        "ticker": null
+    },
+    {
+        "cusip": null,
+        "yellow_key": null,
+        "bb_id": null,
+        "tag": null,
+        "isin": "US0378331005",
+        "bbg_query": null,
+        "ticker": null
+    },
+    {
+        "cusip": null,
+        "yellow_key": "US Equity",
+        "bb_id": null,
+        "tag": null,
+        "isin": null,
+        "bbg_query": null,
+        "ticker": "IBM"
+    },
+    {
+        "cusip": null,
+        "yellow_key": "JP Equity",
+        "bb_id": null,
+        "tag": null,
+        "isin": null,
+        "bbg_query": null,
+        "ticker": "7203"
+    },
+    {
+        "cusip": "594918104",
+        "yellow_key": null,
+        "bb_id": null,
+        "tag": null,
+        "isin": null,
+        "bbg_query": null,
+        "ticker": null
+    }],
+    "program_code": "GETDATA",
+    "requestor_code": "DA.ADM.DEV",
+    "request_fields": ["TICKER",
+    "PX_BID",
+    "PX_MID",
+    "PX_ASK",
+    "FEED_SOURCE",
+    "LAST_UPDATE_DT"],
+    "interface_code": "SAPI1",
+    "callback_uri": null,
+    "response_format_code": "VERTICAL"
+}'''
+# X_PAYLOAD2URI = 'some fake uri'
+
+
+X_REQUEST_OBJECT_DATA_GETHISTORY = '''{
+    "_config": null,
+    "request_options": [
+        {
+            "option_name": "PROGRAMFLAG",
+            "option_value": "one-shot"
+        },
+        {
+            "option_name": "DATERANGE",
+            "option_value": "20180830|20180904"
+        },
+        {
+            "option_name": "USERNUMBER",
+            "option_value": "183888"
+        },
+        {
+            "option_name": "FIRMNAME",
+            "option_value": "pimco"
+        },
+        {
+            "option_name": "PROGRAMNAME",
+            "option_value": "GETHISTORY"
+        }
+    ],
+    "_validation_errors": null,
+    "request_description": "BBG_DATS",
+    "request_data_items": [
+        {
+            "cusip": null,
+            "yellow_key": null,
+            "bb_id": null,
+            "tag": "INAT DELTA ATM - IMPLIED VOL 4 YR .||S648DH(I4)",
+            "isin": null,
+            "bbg_query": "MRN1M Curncy",
+            "ticker": null
+        },
+        {
+            "cusip": null,
+            "yellow_key": null,
+            "bb_id": null,
+            "tag": "INAT DELTA ATM - IMPLIED VOL 5 YR .||S648DH(I5)",
+            "isin": null,
+            "bbg_query": "AS3432471@BVAL Govt",
+            "ticker": null
+        }
+    ],
+    "program_code": "GETHISTORY",
+    "requestor_code": "DA.DATS.DEV",
+    "request_fields": [
+        "PX_LAST"
+    ],
+    "interface_code": "SAPI1",
+    "callback_uri": null,
+    "response_format_code": "VERTICAL"
+}'''
+
+X_RESPONSE = '{}'
+X_BT_LOCATION_IN = '/appl/da_dev/da_data/bbg_transport/in/'
+X_BT_REQUEST_ID = '20786'
+
+X_RESPONSE_SAPI_GETHISTORY_TEST = '''{
+    "/TICKER/MRN1M Curncy": {"security": "/TICKER/MRN1M Curncy", "2018-08-30": {"PX_LAST": "176.22"},
+                             "2018-08-31": {"PX_LAST": "176.22"}, "2018-09-03": {"PX_LAST": "52.5"},
+                             "2018-09-04": {"PX_LAST": "140.0"}},
+    "/TICKER/AS3432471@BVAL Govt": {"security": "/TICKER/AS3432471@BVAL Govt",
+                                    "2018-08-30": {"PX_LAST": "9.883"},
+                                    "2018-08-31": {"PX_LAST": "9.885"},
+                                    "2018-09-03": {"PX_LAST": "9.889"},
+                                    "2018-09-04": {"PX_LAST": "9.89"}}}'''
+
+X_OUTPUT_CSV_STRING = '''security,ASOF_DATE,MNEMONIC,VALUE
+AS3432471@BVAL Govt,2018-08-30,PX_LAST,9.883
+AS3432471@BVAL Govt,2018-08-31,PX_LAST,9.885
+AS3432471@BVAL Govt,2018-09-03,PX_LAST,9.889
+AS3432471@BVAL Govt,2018-09-04,PX_LAST,9.89
+MRN1M Curncy,2018-08-30,PX_LAST,176.22
+MRN1M Curncy,2018-08-31,PX_LAST,176.22
+MRN1M Curncy,2018-09-03,PX_LAST,52.5
+MRN1M Curncy,2018-09-04,PX_LAST,140.0
+'''
+
+X_RAW_DATA_DICT = OrderedDict([(u'/TICKER/MRN1M Curncy', OrderedDict(
+    [(u'security', u'/TICKER/MRN1M Curncy'), (u'2018-08-30', OrderedDict([(u'PX_LAST', u'176.22')])),
+     (u'2018-08-31', OrderedDict([(u'PX_LAST', u'176.22')])), (u'2018-09-03', OrderedDict([(u'PX_LAST', u'52.5')])),
+     (u'2018-09-04', OrderedDict([(u'PX_LAST', u'140.0')]))])), (u'/TICKER/AS3432471@BVAL Govt', OrderedDict(
+    [(u'security', u'/TICKER/AS3432471@BVAL Govt'), (u'2018-08-30', OrderedDict([(u'PX_LAST', u'9.883')])),
+     (u'2018-08-31', OrderedDict([(u'PX_LAST', u'9.885')])), (u'2018-09-03', OrderedDict([(u'PX_LAST', u'9.889')])),
+     (u'2018-09-04', OrderedDict([(u'PX_LAST', u'9.89')]))]))])
+
+
+def test_process_sapi_request(mocker):
+    x_request = struct(request_object_data=X_REQUEST_OBJECT_DATA, bt_request_id=X_BT_REQUEST_ID)
+    mocker.patch(MODULE_UNDER_TEST + 'uri_get').return_value = X_RESPONSE
+    x_repo = mocker.patch(MODULE_UNDER_TEST + 'BtConfigRepo')
+    x_repo.instance.get_by_config_code_bbg_interface_code.return_value.config_value = X_BT_LOCATION_IN
+    x_parse_json_to_csv = mocker.patch(MODULE_UNDER_TEST + 'json2csv')
+    data_file_path = process_sapi_request(x_request)
+    assert X_BT_LOCATION_IN + datetime.today().strftime('%Y%m%d') + '.' + X_BT_REQUEST_ID + '.csv' == data_file_path
+    x_parse_json_to_csv.assert_called_with(ANY, data_file_path, ANY, ANY, ANY)
+
+
+def test_process_sapi_request_get_history(mocker):
+    csv_buffer = codecs.getwriter("utf8")(StringIO())
+    x_request = struct(request_object_data=X_REQUEST_OBJECT_DATA_GETHISTORY, bt_request_id=X_BT_REQUEST_ID)
+    mocker.patch(MODULE_UNDER_TEST + 'uri_get').return_value = X_RESPONSE_SAPI_GETHISTORY_TEST
+    x_repo = mocker.patch(MODULE_UNDER_TEST + 'BtConfigRepo')
+    x_repo.instance.get_by_config_code_bbg_interface_code.return_value.config_value = csv_buffer
+    x_os = mocker.patch(MODULE_UNDER_TEST + 'os')
+    mocker.patch(MODULE_UNDER_TEST + 'payload2uri').return_value = 'https/test'
+    x_os.path.join.return_value = csv_buffer
+    process_sapi_request(x_request)
+    assert X_OUTPUT_CSV_STRING == csv_buffer.stream.getvalue()
