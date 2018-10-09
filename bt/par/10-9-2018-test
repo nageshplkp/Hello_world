@@ -1,0 +1,946 @@
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+import codecs
+import json
+from collections import OrderedDict
+
+import mock
+import pandas
+import pytest
+
+from etl.bbg_transport.agent import BtParser, BtRepoBase
+from etl.bbg_transport.parser import json2csv, validate_security_column
+
+X_PAYLOAD_DICT = OrderedDict([
+    ("WPG UN Equity", OrderedDict([
+        ("security", 'WPG UN Equity'),
+        ("COUNTRY", "US"),
+        ("CRNCY", "USD"),
+        ("CRNCY_ADJ_PX_LAST", 7.81),
+        ("EQY_FUND_TICKER", "WPG US"),
+        ("EXCH_CODE", "UN")
+    ])),
+    ("XHR UN Equity", OrderedDict([
+        ("security", 'XHR UN Equity'),
+        ("COUNTRY", "US"),
+        ("CRNCY", "USD"),
+        ("CRNCY_ADJ_PX_LAST", 24.38),
+        ("EQY_FUND_TICKER", "XHR US"),
+        ("EXCH_CODE", "UN"),
+        ("MARKET_SECTOR_DES", "Equity"),
+    ]))
+])
+
+DF = pandas.DataFrame(X_PAYLOAD_DICT)
+COLS = ['COUNTRY', 'EQY_FUND_TICKER', 'CRNCY', 'CRNCY_ADJ_PX_LAST', 'MARKET_SECTOR_DES', 'EXCH_CODE']
+X_PAYLOAD = json.dumps(X_PAYLOAD_DICT)
+COLS2 = ['COUNTRY', 'EQY_FUND_TICKER', 'CRNCY', 'CRNCY_ADJ_PX_LAST', 'MARKET_SECTOR_DES', 'EXCH_CODE', 'NAME']
+COLS3 = ['COUNTRY', 'EQY_FUND_TICKER', 'CRNCY', 'CRNCY_ADJ_PX_LAST', 'MARKET_SECTOR_DES', 'EXCH_CODE',
+         'SOMEOTHERRANDOMFIELD', 'NAME']
+
+X_OUTPUT_VERTICAL = '''security,MNEMONIC,VALUE
+WPG UN Equity,COUNTRY,US
+WPG UN Equity,CRNCY,USD
+WPG UN Equity,CRNCY_ADJ_PX_LAST,7.81
+WPG UN Equity,EQY_FUND_TICKER,WPG US
+WPG UN Equity,EXCH_CODE,UN
+WPG UN Equity,MARKET_SECTOR_DES,
+XHR UN Equity,COUNTRY,US
+XHR UN Equity,CRNCY,USD
+XHR UN Equity,CRNCY_ADJ_PX_LAST,24.38
+XHR UN Equity,EQY_FUND_TICKER,XHR US
+XHR UN Equity,EXCH_CODE,UN
+XHR UN Equity,MARKET_SECTOR_DES,Equity
+'''
+
+X_OUTPUT_HORIZONTAL = '''security,COUNTRY,CRNCY,CRNCY_ADJ_PX_LAST,EQY_FUND_TICKER,EXCH_CODE,MARKET_SECTOR_DES
+WPG UN Equity,US,USD,7.81,WPG US,UN,
+XHR UN Equity,US,USD,24.38,XHR US,UN,Equity
+'''
+
+X_OUTPUT_HORIZONTAL_COLS = '''security,COUNTRY,EQY_FUND_TICKER,CRNCY,CRNCY_ADJ_PX_LAST,MARKET_SECTOR_DES,EXCH_CODE
+WPG UN Equity,US,WPG US,USD,7.81,,UN
+XHR UN Equity,US,XHR US,USD,24.38,Equity,UN
+'''
+
+X_OUTPUT_HORIZONTAL_COLS2 = '''security,COUNTRY,EQY_FUND_TICKER,CRNCY,CRNCY_ADJ_PX_LAST,MARKET_SECTOR_DES,EXCH_CODE,NAME
+WPG UN Equity,US,WPG US,USD,7.81,,UN,
+XHR UN Equity,US,XHR US,USD,24.38,Equity,UN,
+'''
+
+X_OUTPUT_HORIZONTAL_COLS3 = '''security,COUNTRY,EQY_FUND_TICKER,CRNCY,CRNCY_ADJ_PX_LAST,MARKET_SECTOR_DES,EXCH_CODE,SOMEOTHERRANDOMFIELD,NAME
+WPG UN Equity,US,WPG US,USD,7.81,,UN,,
+XHR UN Equity,US,XHR US,USD,24.38,Equity,UN,,
+'''
+
+X_PAYLOAD_HISTORY1 = '''{"/TICKER/IBM US EQUITY":{"security":"/TICKER/IBM US EQUITY","2018-01-31":{"PX_LAST":"163.7"},"2018-02-28":{"PX_LAST":"155.83"},"2018-03-30":{"PX_LAST":"153.43"},"2018-04-30":{"PX_LAST":"144.96"},"2018-05-31":{"PX_LAST":"141.31"}}}'''
+X_OUTPUT_HISTORY1 = '''security,ASOF_DATE,PX_LAST,NAME
+/TICKER/IBM US EQUITY,2018-01-31,163.7,
+/TICKER/IBM US EQUITY,2018-02-28,155.83,
+/TICKER/IBM US EQUITY,2018-03-30,153.43,
+/TICKER/IBM US EQUITY,2018-04-30,144.96,
+/TICKER/IBM US EQUITY,2018-05-31,141.31,
+'''
+COLS_HIST1 = ['PX_LAST', 'NAME']
+
+X_PAYLOAD_HISTORY2 = '''{"/cusip/594918104":{"security":"/cusip/594918104","2018-01-31":{"PX_BID":"95.19","PX_MID":"95.195","PX_ASK":"95.2"},"2018-02-28":{"PX_BID":"93.77","PX_MID":"93.775","PX_ASK":"93.78"},"2018-03-30":{"PX_BID":"91.24","PX_MID":"91.25","PX_ASK":"91.26"},"2018-04-30":{"PX_BID":"93.49","PX_MID":"93.505","PX_ASK":"93.52"}},"/cusip/17275R102":{"security":"/cusip/17275R102","2018-01-31":{"PX_BID":"41.57","PX_MID":"41.575","PX_ASK":"41.58"},"2018-02-28":{"PX_BID":"44.78","PX_MID":"44.785","PX_ASK":"44.79"},"2018-03-30":{"PX_BID":"42.71","PX_MID":"42.72","PX_ASK":"42.73"},"2018-04-30":{"PX_BID":"44.28","PX_MID":"44.285","PX_ASK":"44.29"}}}'''
+X_OUTPUT_HISTORY2 = '''security,ASOF_DATE,TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT
+/cusip/594918104,2018-01-31,,,95.19,95.195,95.2,,
+/cusip/594918104,2018-02-28,,,93.77,93.775,93.78,,
+/cusip/594918104,2018-03-30,,,91.24,91.25,91.26,,
+/cusip/594918104,2018-04-30,,,93.49,93.505,93.52,,
+/cusip/17275R102,2018-01-31,,,41.57,41.575,41.58,,
+/cusip/17275R102,2018-02-28,,,44.78,44.785,44.79,,
+/cusip/17275R102,2018-03-30,,,42.71,42.72,42.73,,
+/cusip/17275R102,2018-04-30,,,44.28,44.285,44.29,,
+'''
+COLS_HIST2 = ['TICKER', 'NAME', 'PX_BID', 'PX_MID', 'PX_ASK', 'FEED_SOURCE', 'LAST_UPDATE_DT']
+
+X_PAYLOAD_HISTORY3 = '''{"/cusip/594918104":{"security":"/cusip/594918104","2018-01-31":{"PX_BID":"95.19","PX_MID":"95.195","PX_ASK":"95.2"},"2018-02-28":{"PX_BID":"93.77","PX_MID":"93.775","PX_ASK":"93.78"},"2018-03-30":{"PX_BID":"91.24","PX_MID":"91.25","PX_ASK":"91.26"},"2018-04-30":{"PX_BID":"93.49","PX_MID":"93.505","PX_ASK":"93.52"}},"12345":{"category":"BAD_SEC","code":"15","message":"Unknown/Invalid securityInvalid Security [nid:986] ","security":"/cusip/12345","sequenceNumber":"1","source":"986::bbdbh17","subcategory":"INVALID_SECURITY"}}'''
+X_OUTPUT_HISTORY3 = '''security,ASOF_DATE,TICKER,NAME,PX_BID,PX_MID,PX_ASK,FEED_SOURCE,LAST_UPDATE_DT
+/cusip/594918104,2018-01-31,,,95.19,95.195,95.2,,
+/cusip/594918104,2018-02-28,,,93.77,93.775,93.78,,
+/cusip/594918104,2018-03-30,,,91.24,91.25,91.26,,
+/cusip/594918104,2018-04-30,,,93.49,93.505,93.52,,
+Invalid Security!,,,,,,,,
+Invalid Security!,,,,,,,,
+Invalid Security!,,,,,,,,
+Invalid Security!,,,,,,,,
+Invalid Security!,,,,,,,,
+Invalid Security!,,,,,,,,
+'''
+
+X_OUTPUT_HISTORY4 = '''security,ASOF_DATE,MNEMONIC,VALUE
+/cusip/594918104,2018-01-31,FEED_SOURCE,
+/cusip/594918104,2018-01-31,LAST_UPDATE_DT,
+/cusip/594918104,2018-01-31,NAME,
+/cusip/594918104,2018-01-31,PX_ASK,95.2
+/cusip/594918104,2018-01-31,PX_BID,95.19
+/cusip/594918104,2018-01-31,PX_MID,95.195
+/cusip/594918104,2018-01-31,TICKER,
+/cusip/594918104,2018-02-28,FEED_SOURCE,
+/cusip/594918104,2018-02-28,LAST_UPDATE_DT,
+/cusip/594918104,2018-02-28,NAME,
+/cusip/594918104,2018-02-28,PX_ASK,93.78
+/cusip/594918104,2018-02-28,PX_BID,93.77
+/cusip/594918104,2018-02-28,PX_MID,93.775
+/cusip/594918104,2018-02-28,TICKER,
+/cusip/594918104,2018-03-30,FEED_SOURCE,
+/cusip/594918104,2018-03-30,LAST_UPDATE_DT,
+/cusip/594918104,2018-03-30,NAME,
+/cusip/594918104,2018-03-30,PX_ASK,91.26
+/cusip/594918104,2018-03-30,PX_BID,91.24
+/cusip/594918104,2018-03-30,PX_MID,91.25
+/cusip/594918104,2018-03-30,TICKER,
+/cusip/594918104,2018-04-30,FEED_SOURCE,
+/cusip/594918104,2018-04-30,LAST_UPDATE_DT,
+/cusip/594918104,2018-04-30,NAME,
+/cusip/594918104,2018-04-30,PX_ASK,93.52
+/cusip/594918104,2018-04-30,PX_BID,93.49
+/cusip/594918104,2018-04-30,PX_MID,93.505
+/cusip/594918104,2018-04-30,TICKER,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,FEED_SOURCE,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,LAST_UPDATE_DT,
+Invalid Security!,,NAME,
+Invalid Security!,,NAME,
+Invalid Security!,,NAME,
+Invalid Security!,,NAME,
+Invalid Security!,,NAME,
+Invalid Security!,,NAME,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_ASK,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_BID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,PX_MID,
+Invalid Security!,,TICKER,
+Invalid Security!,,TICKER,
+Invalid Security!,,TICKER,
+Invalid Security!,,TICKER,
+Invalid Security!,,TICKER,
+Invalid Security!,,TICKER,
+'''
+
+X_PAYLOAD_DICT_ERROR1 = '''{"123":{"category":"BAD_SEC","code":"15","id":"123","idType":null,"message":"Unknown/Invalid security [nid:2407] ","security":"123","sequenceNumber":"0","source":"2407::bbdbd25","subcategory":"INVALID_SECURITY"},"_fields=PX_LAST":{"category":"BAD_SEC","code":"15","id":"_fields=PX_LAST","idType":null,"message":"Unknown/Invalid security [nid:2407] ","security":"_fields=PX_LAST","sequenceNumber":"1","source":"2407::bbdbd25","subcategory":"INVALID_SECURITY"}}'''
+X_OUTPUT_ERROR1_VERTICAL = '''security,MNEMONIC,VALUE
+123,COUNTRY,
+123,CRNCY,
+123,CRNCY_ADJ_PX_LAST,
+123,EQY_FUND_TICKER,
+123,EXCH_CODE,
+123,MARKET_SECTOR_DES,
+123,category,BAD_SEC
+123,code,15
+123,id,123
+123,idType,
+123,message,Unknown/Invalid security [nid:2407] 
+123,sequenceNumber,0
+123,source,2407::bbdbd25
+123,subcategory,INVALID_SECURITY
+_fields=PX_LAST,COUNTRY,
+_fields=PX_LAST,CRNCY,
+_fields=PX_LAST,CRNCY_ADJ_PX_LAST,
+_fields=PX_LAST,EQY_FUND_TICKER,
+_fields=PX_LAST,EXCH_CODE,
+_fields=PX_LAST,MARKET_SECTOR_DES,
+_fields=PX_LAST,category,BAD_SEC
+_fields=PX_LAST,code,15
+_fields=PX_LAST,id,_fields=PX_LAST
+_fields=PX_LAST,idType,
+_fields=PX_LAST,message,Unknown/Invalid security [nid:2407] 
+_fields=PX_LAST,sequenceNumber,1
+_fields=PX_LAST,source,2407::bbdbd25
+_fields=PX_LAST,subcategory,INVALID_SECURITY
+'''
+
+X_PAYLOAD_DICT_ERROR2 = '''{"IBM US EQUITY":{"security":"IBM US EQUITY","NAME":"INTL BUSINESS MACHINES CORP","PX_BID":144.71},"123":{"category":"BAD_SEC","code":"15","message":"Unknown/Invalid security [nid:3916] ","security":"123","sequenceNumber":"0","source":"3916::bbdbd60","subcategory":"INVALID_SECURITY"}}'''
+X_OUTPUT_ERROR2_VERTICAL = '''security,MNEMONIC,VALUE
+123,COUNTRY,
+123,CRNCY,
+123,CRNCY_ADJ_PX_LAST,
+123,EQY_FUND_TICKER,
+123,EXCH_CODE,
+123,MARKET_SECTOR_DES,
+123,NAME,
+123,PX_BID,
+123,category,BAD_SEC
+123,code,15
+123,message,Unknown/Invalid security [nid:3916] 
+123,sequenceNumber,0
+123,source,3916::bbdbd60
+123,subcategory,INVALID_SECURITY
+IBM US EQUITY,COUNTRY,
+IBM US EQUITY,CRNCY,
+IBM US EQUITY,CRNCY_ADJ_PX_LAST,
+IBM US EQUITY,EQY_FUND_TICKER,
+IBM US EQUITY,EXCH_CODE,
+IBM US EQUITY,MARKET_SECTOR_DES,
+IBM US EQUITY,NAME,INTL BUSINESS MACHINES CORP
+IBM US EQUITY,PX_BID,144.71
+IBM US EQUITY,category,
+IBM US EQUITY,code,
+IBM US EQUITY,message,
+IBM US EQUITY,sequenceNumber,
+IBM US EQUITY,source,
+IBM US EQUITY,subcategory,
+'''
+
+X_BLOOMBERG_DL_INPUT = '''
+START-OF-FILE
+RUNDATE=20180716
+PROGRAMFLAG=one-shot
+PROGRAMNAME=GETDATA
+COMPRESS=yes
+DELIMITER=|
+FIRMNAME=pimco
+USERNUMBER=183888
+REPLYFILENAME=20180716.D.22100.0.txt
+START-OF-FIELDS
+PX_LAST
+TOT_RETURN_INDEX_GROSS_DVDS
+INDX_FREQ
+PX_METHOD
+LONG_COMP_NAME
+SECURITY_TYP
+SECURITY_DES
+TRADE_STATUS
+SECURITY_NAME
+NAME
+TRADING_DAY_START_TIME_EOD
+TRADING_DAY_END_TIME_EOD
+LAST_UPDATE_DATE_EOD
+EXCHANGE_DELAY
+PX_CLOSE_DT
+HISTORY_START_DT
+EQY_INIT_PO_DT
+ISSUE_DT
+CPN_FREQ
+FUND_PRICING_FREQ
+EXCH_CODE
+TICKER
+MARKET_SECTOR_DES
+PRICING_SOURCE
+COUNTRY_ISO
+MARKET_STATUS
+END-OF-FIELDS
+
+TIMESTARTED=Mon Jul 16 21:04:27 EDT 2018
+START-OF-DATA
+293D1556 Index|0|27|.000000| |Monthly|INDX|IMF DOT Peru Imports from Maldives CIF|Index|IMF DOT Peru Imports from Mald| |Imports from Maldives|IMF DOT Peru Imports from Mald|N.A.|N.A.|06/30/2017|None| | | | | | | | |293D1556|Index| |PE| |
+193D1566 Index|0|27|32.730000| |Monthly|INDX|IMF DOT Australia Imports from Philippines|Index|IMF DOT Australia Imports from| |Imports from Philippines|IMF DOT Australia Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |193D1566|Index| |AU| |
+199D1223 Index|0|27|135.870000| |Monthly|INDX|IMF DOT South Africa Imports from Brazil CIF|Index|IMF DOT South Africa Imports f| |Imports to Brazil|IMF DOT South Africa Imports f|N.A.|N.A.|03/31/2018|None| | | | | | | | |199D1223|Index| |ZA| |
+922D1142 Index|0|27|38.490000| |Monthly|INDX|IMF DOT Russia Imports from Norway CIF|Index|IMF DOT Russia Imports from No| |Imports from Norway|IMF DOT Russia Imports from No|N.A.|N.A.|03/31/2018|None| | | | | | | | |922D1142|Index| |RU| |
+ECUPEU 17 Index|0|27|9.100000| |Daily|INDX|Eurozone Unemployment Rate Forecast (%)|Index|Eurozone Unemployment Rate For| |Eurozone Unemploy Forecast|Eurozone Unemployment Rate For|N.A.|N.A.|02/20/2018|None| |02/16/2015| | | | | | |ECUPEU 17|Index| |EU| |
+CNYI6M Curncy|0|27|N.A.| | |PRC|USDCNY 6 Month Forward Implied Yield|FORWARD|CNYI6M Curncy| |CHINA RENMINBI|CNY FX Swap Imp Yld 6M|N.A.|N.A.|N.A.|None|N.A.|N.A.| | | | | | |CNYI6M|Curncy|Bloomberg BGN|CN| |
+RONV6M Curncy|0|27|7.186000| | |PRC|USDRON 6 Month ATM Implied Volatility|OPTION VOLATILITY|USDRONV6M Curncy| |N.A.|USD-RON OPT VOL 6M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|06/16/2008| | | | | | |USDRONV6M|Curncy|Composite(NY)|RO| |
+PENI3M Curncy|0|27|N.A.| | |PRC|USDPEN 3 Month Forward Implied Yield|FORWARD|PENI3M Curncy| |PERUVIAN SOL|PEN Fwd Imp Yld 3M|N.A.|N.A.|N.A.|None|N.A.|N.A.| | | | | | |PENI3M|Curncy|Bloomberg BGN|PE| |
+CLPV1M Curncy|0|27|10.250000| | |PRC|USDCLP 1 Month ATM Implied Volatility|OPTION VOLATILITY|USDCLPV1M Curncy| |N.A.|USD-CLP OPT VOL 1M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|07/28/1998| | | | | | |USDCLPV1M|Curncy|Composite(NY)|CL| |
+CADV1M Curncy|0|27|6.565000| | |PRC|USDCAD 1 Month ATM Implied Volatility|OPTION VOLATILITY|USDCADV1M Curncy| |N.A.|USD-CAD OPT VOL 1M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|08/06/1998| | | | | | |USDCADV1M|Curncy|Composite(NY)|CA| |
+PENV3M Curncy|0|27|4.045000| | |PRC|USDPEN 3 Month ATM Implied Volatility|OPTION VOLATILITY|USDPENV3M Curncy| |N.A.|USD-PEN OPT VOL 3M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|01/02/2007| | | | | | |USDPENV3M|Curncy|Bloomberg BGN|PE| |
+CNHV6M Curncy|0|27|5.850000| | |PRC|USDCNH 6 Month ATM Implied Volatility|OPTION VOLATILITY|USDCNHV6M Curncy| |N.A.|USD-CNH OptVol ATM 6M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|02/23/2011| | | | | | |USDCNHV6M|Curncy|Composite(NY)|CN| |
+GSGDX US Equity|0|27|8.940000|8.9452| |NAV|Goldman Sachs Investment Grade Credit Fund|Open-End Fund|GSGDX|Y|Goldman Sachs Investment Grade|GLDMN SCHS INV GRD CRDT-INST|09:30:00|20:30:00|07/13/2018|End of Day|07/13/2018| | | | | |0|US|GSGDX|Equity|US|US|ACTV|
+ACCBX US Equity|0|27|7.070000|7.0746| |NAV|Invesco Corporate Bond Fund|Open-End Fund|ACCBX|Y|Invesco Corporate Bond Fund|INVESCO CORPORATE BOND-A|09:30:00|20:30:00|07/13/2018|End of Day|07/13/2018| | | | | |0|US|ACCBX|Equity|US|US|ACTV|
+ECPIMY 15 Index|0|27|2.100000| |Daily|INDX|Malaysia CPI Economic Forecast (YoY %)|Index|Malaysia CPI Economic Forecast| |Malaysia CPI Forecast|Malaysia CPI Economic Forecast|N.A.|N.A.|02/29/2016|None| |02/27/2013| | | | | | |ECPIMY 15|Index| |MY| |
+ECPIID 19 Index|0|27|3.900000| |Daily|INDX|Indonesia CPI Economic Forecast (YoY %)|Index|Indonesia CPI Economic Forecas| |Indonesia CPI Forecast|Indonesia CPI Economic Forecas|N.A.|N.A.|07/16/2018|None| |02/14/2017| | | | | | |ECPIID 19|Index| |ID| |
+ECPIIN 26 Index|0|27|N.A.| |Daily|INDX|India CPI Economic Forecast (YoY %)|Index|India CPI Economic Forecast (Y| |India CPI Forecast|India CPI Economic Forecast (Y|N.A.|N.A.| |None| | | | | | | | |ECPIIN 26|Index| |IN| |
+ECPITH 10 Index|0|27|3.300000| |Daily|INDX|Thailand CPI Economic Forecast (YoY %)|Index|Thailand CPI Economic Forecast| |Thailand CPI Forecast|Thailand CPI Economic Forecast|N.A.|N.A.|02/28/2011|None| |06/18/2008| | | | | | |ECPITH 10|Index| |TH| |
+ECPISE 24 Index|0|27|N.A.| |Daily|INDX|Sweden CPI Economic Forecast (YoY %)|Index|Sweden CPI Economic Forecast (| |Sweden CPI Forecast|Sweden CPI Economic Forecast (|N.A.|N.A.| |None| | | | | | | | |ECPISE 24|Index| |SE| |
+ECPISE 08 Index|0|27|3.700000| |Daily|INDX|Sweden CPI Economic Forecast (YoY %)|Index|Sweden CPI Economic Forecast (| |Sweden CPI Forecast|Sweden CPI Economic Forecast (|N.A.|N.A.|02/19/2009|None| |10/08/2007| | | | | | |ECPISE 08|Index| |SE| |
+ECPIGR 19 Index|0|27|1.200000| |Daily|INDX|Greece CPI Economic Forecast (YoY %)|Index|Greece CPI Economic Forecast (| |Greece CPI Forecast|Greece CPI Economic Forecast (|N.A.|N.A.|07/16/2018|None| |07/17/2017| | | | | | |ECPIGR 19|Index| |GR| |
+ECPICO 26 Index|0|27|N.A.| |Daily|INDX|Colombia CPI Economic Forecast (YoY %)|Index|Colombia CPI Economic Forecast| |Colombia CPI Forecast|Colombia CPI Economic Forecast|N.A.|N.A.| |None| | | | | | | | |ECPICO 26|Index| |CO| |
+ECPIBR 30 Index|0|27|N.A.| |Daily|INDX|Brazil CPI Economic Forecast (YoY %)|Index|Brazil CPI Economic Forecast (| |Brazil CPI Forecast|Brazil CPI Economic Forecast (|N.A.|N.A.| |None| | | | | | | | |ECPIBR 30|Index| |BR| |
+ECPIBR 14 Index|0|27|6.300000| |Daily|INDX|Brazil CPI Economic Forecast (YoY %)|Index|Brazil CPI Economic Forecast (| |Brazil CPI Forecast|Brazil CPI Economic Forecast (|N.A.|N.A.|02/27/2015|None| |03/01/2012| | | | | | |ECPIBR 14|Index| |BR| |
+ECPIAR 20 Index|0|27|15.000000| |Daily|INDX|Argentina CPI Economic Forecast (YoY %)|Index|Argentina CPI Economic Forecas| |Argentina CPI Forecast|Argentina CPI Economic Forecas|N.A.|N.A.|07/16/2018|None| |03/29/2018| | | | | | |ECPIAR 20|Index| |AR| |
+111D1112 Index|0|27|5183.780000| |Monthly|INDX|IMF DOT United States Imports from United Kingdom CIF|Index|IMF DOT United States Imports| |Us Im Uk|IMF DOT United States Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |111D1112|Index| |US| |
+228D1223 Index|0|27|591.770000| |Monthly|INDX|IMF DOT Chile Imports from Brazil CIF|Index|IMF DOT Chile Imports from Bra| |Imports from Brazil|IMF DOT Chile Imports from Bra|N.A.|N.A.|03/31/2018|None| | | | | | | | |228D1223|Index| |CL| |
+223D1536 Index|0|27|116.890000| |Monthly|INDX|IMF DOT Brazil Imports from Indonesia CIF|Index|IMF DOT Brazil Imports from In| |Brz 1 Imp Indonesia|IMF DOT Brazil Imports from In|N.A.|N.A.|03/31/2018|None| | | | | | | | |223D1536|Index| |BR| |
+556D1273 Index|0|27|.050000| |Monthly|INDX|IMF DOT Maldives Imports from Mexico CIF|Index|IMF DOT Maldives Imports from| |Imports from Mexico|IMF DOT Maldives Imports from|N.A.|N.A.|02/28/2018|None| | | | | | | | |556D1273|Index| |MV| |
+536D1924 Index|0|27|2892.500000| |Monthly|INDX|IMF DOT Indonesia Imports from China CIF|Index|IMF DOT Indonesia Imports from| |Imports from China|IMF DOT Indonesia Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |536D1924|Index| |ID| |
+156D1233 Index|0|27|52.840000| |Monthly|INDX|IMF DOT Canada Imports from Colombia CIF|Index|IMF DOT Canada Imports from Co| |Can Imp Colombia|IMF DOT Canada Imports from Co|N.A.|N.A.|03/31/2018|None| | | | | | | | |156D1233|Index| |CA| |
+273D1233 Index|0|27|167.790000| |Monthly|INDX|IMF DOT Mexico Imports from Colombia CIF|Index|IMF DOT Mexico Imports from Co| |Imports from Colombia|IMF DOT Mexico Imports from Co|N.A.|N.A.|03/31/2018|None| | | | | | | | |273D1233|Index| |MX| |
+196D1146 Index|0|27|27.060000| |Monthly|INDX|IMF DOT New Zealand Imports from Switzerland CIF|Index|IMF DOT New Zealand Imports fr| |New Z Imp Switzerland|IMF DOT New Zealand Imports fr|N.A.|N.A.|03/31/2018|None| | | | | | | | |196D1146|Index| |NZ| |
+ECPITW 17 Index|0|27|.600000| |Daily|INDX|Taiwan CPI Economic Forecast (YoY %)|Index|Taiwan CPI Economic Forecast (| |Taiwan CPI Forecast|Taiwan CPI Economic Forecast (|N.A.|N.A.|02/28/2018|None| |03/25/2015| | | | | | |ECPITW 17|Index| |TW| |
+ECPISG 24 Index|0|27|N.A.| |Daily|INDX|Singapore CPI Economic Forecast (YoY %)|Index|Singapore CPI Economic Forecas| |Singapore CPI Forecast|Singapore CPI Economic Forecas|N.A.|N.A.| |None| | | | | | | | |ECPISG 24|Index| |SG| |
+ECPINZ 21 Index|0|27|N.A.| |Daily|INDX|New Zealand CPI Economic Forecast (YoY %)|Index|New Zealand CPI Economic Forec| |New Zealand CPI Forecast|New Zealand CPI Economic Forec|N.A.|N.A.| |None| | | | | | | | |ECPINZ 21|Index| |NZ| |
+ECPIZA 20 Index|0|27|5.200000| |Daily|INDX|South Africa CPI Economic Forecast (YoY %)|Index|South Africa CPI Economic Fore| |South Africa CPI Forecast|South Africa CPI Economic Fore|N.A.|N.A.|07/16/2018|None| |03/29/2018| | | | | | |ECPIZA 20|Index| |ZA| |
+ECPIZA 12 Index|0|27|5.700000| |Daily|INDX|South Africa CPI Economic Forecast (YoY %)|Index|South Africa CPI Economic Fore| |South Africa CPI Forecast|South Africa CPI Economic Fore|N.A.|N.A.|02/28/2013|None| |05/25/2010| | | | | | |ECPIZA 12|Index| |ZA| |
+ECPITR 26 Index|0|27|N.A.| |Daily|INDX|Turkey CPI Economic Forecast (YoY %)|Index|Turkey CPI Economic Forecast (| |Turkey CPI Forecast|Turkey CPI Economic Forecast (|N.A.|N.A.| |None| | | | | | | | |ECPITR 26|Index| |TR| |
+ECPITR 18 Index|0|27|11.800000| |Daily|INDX|Turkey CPI Economic Forecast (YoY %)|Index|Turkey CPI Economic Forecast (| |Turkey CPI Forecast|Turkey CPI Economic Forecast (|N.A.|N.A.|07/16/2018|None| |03/31/2016| | | | | | |ECPITR 18|Index| |TR| |
+ECUPTW 19 Index|0|27|3.800000| |Daily|INDX|Taiwan Unemployment Rate Forecast (%)|Index|Taiwan Unemployment Rate Forec| |Taiwan Unemployment Forecast|Taiwan Unemployment Rate Forec|N.A.|N.A.|07/16/2018|None| |03/22/2017| | | | | | |ECUPTW 19|Index| |TW| |
+ECUPTW 11 Index|0|27|4.400000| |Daily|INDX|Taiwan Unemployment Rate Forecast (%)|Index|Taiwan Unemployment Rate Forec| |Taiwan Unemployment Forecast|Taiwan Unemployment Rate Forec|N.A.|N.A.|12/23/2011|None| |08/19/2009| | | | | | |ECUPTW 11|Index| |TW| |
+ECGDNZ 13 Index|0|27|2.700000| |Daily|INDX|New Zealand GDP Economic Forecast (Annual YoY %)|Index|New Zealand GDP Economic Forec| |New Zealand GDP Forecast|New Zealand GDP Economic Forec|N.A.|N.A.|02/28/2014|None| |04/27/2011| | | | | | |ECGDNZ 13|Index| |NZ| |
+ECGDZA 28 Index|0|27|N.A.| |Daily|INDX|South Africa GDP Economic Forecast (Annual YoY %)|Index|South Africa GDP Economic Fore| |South Africa GDP Forecast|South Africa GDP Economic Fore|N.A.|N.A.| |None| | | | | | | | |ECGDZA 28|Index| |ZA| |
+ECGDZA 20 Index|0|27|2.300000| |Daily|INDX|South Africa GDP Economic Forecast (Annual YoY %)|Index|South Africa GDP Economic Fore| |South Africa GDP Forecast|South Africa GDP Economic Fore|N.A.|N.A.|07/16/2018|None| |03/29/2018| | | | | | |ECGDZA 20|Index| |ZA| |
+ECGDHU 27 Index|0|27|N.A.| |Daily|INDX|Hungary GDP Economic Forecast (Annual YoY %)|Index|Hungary GDP Economic Forecast| |Hungary GDP Forecast|Hungary GDP Economic Forecast|N.A.|N.A.| |None| | | | | | | | |ECGDHU 27|Index| |HU| |
+ECGDHU 19 Index|0|27|3.200000| |Daily|INDX|Hungary GDP Economic Forecast (Annual YoY %)|Index|Hungary GDP Economic Forecast| |Hungary GDP Forecast|Hungary GDP Economic Forecast|N.A.|N.A.|07/16/2018|None| |02/24/2017| | | | | | |ECGDHU 19|Index| |HU| |
+ECGDGB 24 Index|0|27|N.A.| |Daily|INDX|UK GDP Economic Forecast (Annual YoY %)|Index|UK GDP Economic Forecast (Annu| |UK GDP Forecast|UK GDP Economic Forecast (Annu|N.A.|N.A.| |None| | | | | | | | |ECGDGB 24|Index| |GB| |
+ECGDTH 23 Index|0|27|N.A.| |Daily|INDX|Thailand GDP Economic Forecast (Annual YoY %)|Index|Thailand GDP Economic Forecast| |Thailand GDP Forecast|Thailand GDP Economic Forecast|N.A.|N.A.| |None| | | | | | | | |ECGDTH 23|Index| |TH| |
+ECGDTH 15 Index|0|27|2.800000| |Daily|INDX|Thailand GDP Economic Forecast (Annual YoY %)|Index|Thailand GDP Economic Forecast| |Thailand GDP Forecast|Thailand GDP Economic Forecast|N.A.|N.A.|02/29/2016|None| |02/27/2013| | | | | | |ECGDTH 15|Index| |TH| |
+ECGDCH 22 Index|0|27|N.A.| |Daily|INDX|Switzerland GDP Economic Forecast (Annual YoY %)|Index|Switzerland GDP Economic Forec| |Switzerland GDP Forecast|Switzerland GDP Economic Forec|N.A.|N.A.| |None| | | | | | | | |ECGDCH 22|Index| |CH| |
+ECGDSE 29 Index|0|27|N.A.| |Daily|INDX|Sweden GDP Economic Forecast (Annual YoY %)|Index|Sweden GDP Economic Forecast (| |Sweden GDP Forecast|Sweden GDP Economic Forecast (|N.A.|N.A.| |None| | | | | | | | |ECGDSE 29|Index| |SE| |
+ECGDES 20 Index|0|27|2.000000| |Daily|INDX|Spain GDP Economic Forecast|Index|Spain GDP Economic Forecast| |Spain GDP Forecast|Spain GDP Economic Forecast|N.A.|N.A.|07/16/2018|None| |02/12/2018| | | | | | |ECGDES 20|Index| |ES| |
+ECUPTR 16 Index|0|27|10.800000| |Daily|INDX|Turkey Unemployment Rate Forecast (%)|Index|Turkey Unemployment Rate Forec| |Turkey Unemploy Forecast|Turkey Unemployment Rate Forec|N.A.|N.A.|02/28/2017|None| |03/27/2014| | | | | | |ECUPTR 16|Index| |TR| |
+RRSWM4 Curncy|0|27|8.190000| | |PRC|RUB SWAP VS MOSPRIME 4YR|SWAP|RRSWM4 Curncy| |RUSSIAN RUBLE SWAP 4 YR|RUB SWAP VS MOSPRIME 4YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|08/29/2006| | | | | | |RRSWM4|Curncy|Composite(NY)|RU| |
+TDSWNI7 Curncy|0|27|1.022500| | |PRC|TWD NDIRS (TAIBOR3M) 7YR|NDF SWAP|TDSWNI7 Curncy| |TAIWAN DOLLAR SWAP|TWD NDIRS (TAIBOR3M) 7YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|02/11/2015| | | | | | |TDSWNI7|Curncy|Composite(NY)|TW| |
+MRSV0C5 Curncy|0|27|13.810000| | |PRC|MYR OF SWPT %VOL 3M5Y|SWAPTION VOLATILITY|MRSV0C5 Curncy| |N.A.|MYR OF SWPT %VOL 3M5Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|04/13/2005| | | | | | |MRSV0C5|Curncy|Composite(NY)|MY| |
+RRSV0C10 Curncy|0|27|15.500000| | |PRC|RUB SWPT %VOL 3M10Y|SWAPTION VOLATILITY|RRSV0C10 Curncy| |N.A.|RUB SWPT %VOL 3M10Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|10/10/2012| | | | | | |RRSV0C10|Curncy|Composite(NY)|RU| |
+KWSWNI20 Curncy|0|27|2.300000| | |PRC|KRW SWAP NDIRS      20YR|NON-DELIVERABLE IRS SWAP|KWSWNI20 Curncy| |SOUTH KOREAN WON SWAP|KRW SWAP NDIRS      20YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|06/19/2006| | | | | | |KWSWNI20|Curncy|Composite(NY)|KR| |
+HFSW20 Curncy|0|27|3.670000| | |PRC|HUF SWAP ANN (VS 6M) 20Y|SWAP|HFSW20 Curncy| |HUNGARIAN FORINT SWAP 20 YR|HUF SWAP ANN (VS 6M) 20Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|12/09/2003| | | | | | |HFSW20|Curncy|Composite(NY)|HU| |
+TYSW20V3 Curncy|0|27|14.672500| | |PRC|TRY SWAP (vs 3M)   20 YR|SWAP|TYSW20V3 Curncy| |TURKISH LIRA SWAP 20 YR|TRY SWAP (vs 3M)   20 YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|08/10/2007| | | | | | |TYSW20V3|Curncy|Composite(NY)|TR| |
+SASV0C2 Curncy|0|27|2.550000| | |PRC|ZAR SWPT %VOL 3M2Y|SWAPTION VOLATILITY|SASV0C2 Curncy| |N.A.|ZAR SWPT %VOL 3M2Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|03/15/2002| | | | | | |SASV0C2|Curncy|Composite(NY)|ZA| |
+MRSWNI1 Curncy|0|27|3.712500| | |PRC|MYR SWAP NDIRS      1 YR|NON-DELIVERABLE IRS SWAP|MRSWNI1 Curncy| |MALAYSIAN RINGGIT SWAP|MYR SWAP NDIRS      1 YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|11/22/2006| | | | | | |MRSWNI1|Curncy|Composite(NY)|MY| |
+CCSV0C5 Curncy|0|27|N.A.| | |PRC|CNY OFF SWPT %VOL 3M5Y|SWAPTION VOLATILITY|CCSV0C5 Curncy| |N.A.|CNY OFF SWPT %VOL 3M5Y|N.A.|N.A.|N.A.|None|N.A.|04/16/2008| | | | | | |CCSV0C5|Curncy|Composite(NY)|CN| |
+TBSV0C10 Curncy|0|27|18.300000| | |PRC|THB ONSH SWPT%VOL 3M10Y|SWAPTION VOLATILITY|TBSV0C10 Curncy| |N.A.|THB ONSH SWPT%VOL 3M10Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|07/03/2002| | | | | | |TBSV0C10|Curncy|Composite(NY)|TH| |
+TYSW4V3 Curncy|0|27|19.965000| | |PRC|TRY SWAP (VS 3M)    4 YR|SWAP|TYSW4V3 Curncy| |TURKISH LIRA SWAP 4 YR|TRY SWAP (VS 3M)    4 YR|17:00:00|16:59:59|07/16/2018|None|07/16/2018|05/19/2005| | | | | | |TYSW4V3|Curncy|Composite(NY)|TR| |
+HFSV0C2 Curncy|0|27|285.130000| | |PRC|HUF SWPT %VOL ATM 3M2Y|SWAPTION VOLATILITY|HFSV0C2 Curncy| |N.A.|HUF SWPT %VOL ATM 3M2Y|17:00:00|16:59:59|07/16/2018|None|07/16/2018|01/24/2008| | | | | | |HFSV0C2|Curncy|Composite(NY)|HU| |
+CKSV0C30 Curncy|0|27|N.A.| | |PRC|CZK SWPT %VOL 3M30Y|SWAPTION VOLATILITY|CKSV0C30 Curncy| |N.A.|CZK SWPT %VOL 3M30Y|N.A.|N.A.|N.A.|None|N.A.|01/26/2011| | | | | | |CKSV0C30|Curncy|Composite(NY)|CZ| |
+542D1566 Index|0|27|272.210000| |Monthly|INDX|IMF DOT South Korea Imports from Philippines CIF|Index|IMF DOT South Korea Imports fr| |Imports from Philippines|IMF DOT South Korea Imports fr|N.A.|N.A.|03/31/2018|None| | | | | | | | |542D1566|Index| |KR| |
+233D1111 Index|0|27|1017.820000| |Monthly|INDX|IMF DOT Colombia Imports from United States CIF|Index|IMF DOT Colombia Imports from| |Imports from United States|IMF DOT Colombia Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |233D1111|Index| |CO| |
+111D1144 Index|0|27|1121.900000| |Monthly|INDX|IMF DOT United States Imports from Sweden CIF|Index|IMF DOT United States Imports| |Us Im Swe|IMF DOT United States Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |111D1144|Index| |US| |
+193D1536 Index|0|27|261.770000| |Monthly|INDX|IMF DOT Australia Imports from Indonesia|Index|IMF DOT Australia Imports from| |Imports from Indonesia|IMF DOT Australia Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |193D1536|Index| |AU| |
+186D1273 Index|0|27|57.570000| |Monthly|INDX|IMF DOT Turkey Imports from Mexico CIF|Index|IMF DOT Turkey Imports from Me| |Trk Imp Mexico|IMF DOT Turkey Imports from Me|N.A.|N.A.|03/31/2018|None| | | | | | | | |186D1273|Index| |TR| |
+158D1924 Index|0|27|14929.690000| |Monthly|INDX|IMF DOT Japan Imports from China CIF|Index|IMF DOT Japan Imports from Chi| |Imports to China|IMF DOT Japan Imports from Chi|N.A.|N.A.|03/31/2018|None| | | | | | | | |158D1924|Index| |JP| |
+111D1146 Index|0|27|3390.600000| |Monthly|INDX|IMF DOT United States Imports from Switzerland CIF|Index|IMF DOT United States Imports| |Us Im Swi|IMF DOT United States Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |111D1146|Index| |US| |
+534D1228 Index|0|27|184.120000| |Monthly|INDX|IMF DOT India Imports from Chile CIF|Index|IMF DOT India Imports from Chi| |Imports from Chile|IMF DOT India Imports from Chi|N.A.|N.A.|03/31/2018|None| | | | | | | | |534D1228|Index| |IN| |
+196D1144 Index|0|27|27.440000| |Monthly|INDX|IMF DOT New Zealand Imports from Sweden CIF|Index|IMF DOT New Zealand Imports fr| |New Z Imp Sweden|IMF DOT New Zealand Imports fr|N.A.|N.A.|03/31/2018|None| | | | | | | | |196D1144|Index| |NZ| |
+556D1199 Index|0|27|.530000| |Monthly|INDX|IMF DOT Maldives Imports from South Africa CIF|Index|IMF DOT Maldives Imports from| |Imports from South Africa|IMF DOT Maldives Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |556D1199|Index| |MV| |
+233D1186 Index|0|27|32.700000| |Monthly|INDX|IMF DOT Colombia Imports from Turkey CIF|Index|IMF DOT Colombia Imports from| |Imports from Turkey|IMF DOT Colombia Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |233D1186|Index| |CO| |
+924D1273 Index|0|27|1047.670000| |Monthly|INDX|IMF DOT China Mainland Imports from Mexico CIF|Index|IMF DOT China Mainland Imports| |Imports from Mexico|IMF DOT China Mainland Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |924D1273|Index| |CN| |
+542D1534 Index|0|27|524.380000| |Monthly|INDX|IMF DOT South Korea Imports from India CIF|Index|IMF DOT South Korea Imports fr| |Imports from India|IMF DOT South Korea Imports fr|N.A.|N.A.|03/31/2018|None| | | | | | | | |542D1534|Index| |KR| |
+156D1566 Index|0|27|101.650000| |Monthly|INDX|IMF DOT Canada Imports from Philippines CIF|Index|IMF DOT Canada Imports from Ph| |Can Imp Philippines|IMF DOT Canada Imports from Ph|N.A.|N.A.|03/31/2018|None| | | | | | | | |156D1566|Index| |CA| |
+USDARSV1M Curncy|0|27|10.000000| | |PRC|USDARS 1 Month ATM Implied Volatility|OPTION VOLATILITY|USDARSV1M Curncy| |N.A.|USD-ARS OPT VOL 1M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|11/28/2001| | | | | | |USDARSV1M|Curncy|Composite(NY)|AR| |
+M2EF Index|0|27|2370.000000|2370.0000| |INDX|MSCI Emerging Markets Gross Total Return USD Index|Equity Index|M2EF|Y|MSCI Emerging Markets Gross To|MSCI EM GR|17:30:00|17:00:00|07/16/2018|End of Day|07/16/2018|12/31/1987| | | | | | |M2EF|Index| |MULT|ACTV|
+MXWD Index|0|27|514.534700|514.6606| |INDX|MSCI ACWI Index|Equity Index|MXWD|Y|MSCI ACWI Index|MSCI ACWI|17:30:00|17:00:00|07/16/2018|End of Day|07/16/2018|12/31/1987| | | | | | |MXWD|Index| |MULT|ACTV|
+ECPICH 18 Index|0|27|.800000| |Daily|INDX|Switzerland CPI Economic Forecast (YoY %)|Index|Switzerland CPI Economic Forec| |Switzerland CPI Forecast|Switzerland CPI Economic Forec|N.A.|N.A.|07/16/2018|None| |03/16/2016| | | | | | |ECPICH 18|Index| |CH| |
+ECPIMX 19 Index|0|27|3.600000| |Daily|INDX|Mexico CPI Economic Forecast (YoY %)|Index|Mexico CPI Economic Forecast (| |Mexico CPI Forecast|Mexico CPI Economic Forecast (|N.A.|N.A.|07/16/2018|None| |02/16/2017| | | | | | |ECPIMX 19|Index| |MX| |
+ECPIFR 26 Index|0|27|N.A.| |Daily|INDX|France CPI Economic Forecast|Index|France CPI Economic Forecast| |France CPI Forecast|France CPI Economic Forecast|N.A.|N.A.| |None| | | | | | | | |ECPIFR 26|Index| |FR| |
+ECPIEU 09 Index|0|27|.300000| |Daily|INDX|Eurozone CPI Economic Forecast (YoY %)|Index|Eurozone CPI Economic Forecast| |Eurozone CPI Forecast|Eurozone CPI Economic Forecast|N.A.|N.A.|02/26/2010|None| |12/07/2007| | | | | | |ECPIEU 09|Index| |EU| |
+ECUPES 26 Index|0|27|N.A.| |Daily|INDX|Spain Unemployment Rate Forecast|Index|Spain Unemployment Rate Foreca| |Spain Unemploy Forecast|Spain Unemployment Rate Foreca|N.A.|N.A.| |None| | | | | | | | |ECUPES 26|Index| |ES| |
+ECUPMX 13 Index|0|27|5.040000| |Daily|INDX|Mexico Unemployment Rate Forecast (%)|Index|Mexico Unemployment Rate Forec| |Mexico Unemployment Forecast|Mexico Unemployment Rate Forec|N.A.|N.A.|01/24/2014|None| |11/21/2011| | | | | | |ECUPMX 13|Index| |MX| |
+ECUPCO 10 Index|0|27|11.800000| |Daily|INDX|Colombia Unemployment Rate Forecast (%)|Index|Colombia Unemployment Rate For| |Colombia Unemployment Forecast|Colombia Unemployment Rate For|N.A.|N.A.|02/28/2011|None| |09/05/2008| | | | | | |ECUPCO 10|Index| |CO| |
+ECUPCL 24 Index|0|27|N.A.| |Daily|INDX|Chile Unemployment Rate Forecast (%)|Index|Chile Unemployment Rate Foreca| |Chile Unemploy Forecast|Chile Unemployment Rate Foreca|N.A.|N.A.| |None| | | | | | | | |ECUPCL 24|Index| |CL| |
+TWDV3M Curncy|0|27|5.691000| | |PRC|USDTWD 3 Month ATM Implied Volatility|OPTION VOLATILITY|USDTWDV3M Curncy| |N.A.|USD-TWD OPT VOL 3M|17:00:00|16:59:59|07/16/2018|None|07/16/2018|02/23/1999| | | | | | |USDTWDV3M|Curncy|Composite(NY)|TW| |
+924D1146 Index|0|27|4189.340000| |Monthly|INDX|IMF DOT China Mainland Imports from Switzerland CIF|Index|IMF DOT China Mainland Imports| |Imports from Switzerland|IMF DOT China Mainland Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |924D1146|Index| |CN| |
+112D1158 Index|0|27|1147.290000| |Monthly|INDX|IMF DOT United Kingdom Imports from Japan CIF|Index|IMF DOT United Kingdom Imports| |Imports from Japan|IMF DOT United Kingdom Imports|N.A.|N.A.|03/31/2018|None| | | | | | | | |112D1158|Index| |GB| |
+556D1566 Index|0|27|.020000| |Monthly|INDX|IMF DOT Maldives Imports from Philippines CIF|Index|IMF DOT Maldives Imports from| |Imports from Philippines|IMF DOT Maldives Imports from|N.A.|N.A.|03/31/2018|None| | | | | | | | |556D1566|Index| |MV| |
+223D1186 Index|0|27|44.450000| |Monthly|INDX|IMF DOT Brazil Imports from Turkey CIF|Index|IMF DOT Brazil Imports from Tu| |Brz 1 Imp Turkey|IMF DOT Brazil Imports from Tu|N.A.|N.A.|03/31/2018|None| | | | | | | | |223D1186|Index| |BR| |
+156D1199 Index|0|27|49.620000| |Monthly|INDX|IMF DOT Canada Imports from South Africa CIF|Index|IMF DOT Canada Imports from So| |Can Imp South Africa|IMF DOT Canada Imports from So|N.A.|N.A.|03/31/2018|None| | | | | | | | |156D1199|Index| |CA| |
+998D1144 Index|0|27|9531.860000| |Monthly|INDX|IMF DOT European Union (Agg) Imports from Sweden CIF|Index|IMF DOT European Union (Agg) I| |Imports from Sweden|IMF DOT European Union (Agg) I|N.A.|N.A.|03/31/2018|None| | | | | | | | |998D1144|Index| | | |
+END-OF-DATA
+TIMEFINISHED=Mon Jul 16 21:05:01 EDT 2018
+END-OF-FILE
+'''
+X_BLOOMBERG_DL_OUTPUT = '''"SECURITY","ROW_STATUS","NUM_OF_FIELDS","PX_LAST","TOT_RETURN_INDEX_GROSS_DVDS","INDX_FREQ","PX_METHOD","LONG_COMP_NAME","SECURITY_TYP","SECURITY_DES","TRADE_STATUS","SECURITY_NAME","NAME","TRADING_DAY_START_TIME_EOD","TRADING_DAY_END_TIME_EOD","LAST_UPDATE_DATE_EOD","EXCHANGE_DELAY","PX_CLOSE_DT","HISTORY_START_DT","EQY_INIT_PO_DT","ISSUE_DT","CPN_FREQ","FUND_PRICING_FREQ","EXCH_CODE","TICKER","MARKET_SECTOR_DES","PRICING_SOURCE","COUNTRY_ISO","MARKET_STATUS"
+"293D1556 Index","0","27",".000000","","Monthly","INDX","IMF DOT Peru Imports from Maldives CIF","Index","IMF DOT Peru Imports from Mald","","Imports from Maldives","IMF DOT Peru Imports from Mald","N.A.","N.A.","06/30/2017","None","","","","","","","","","293D1556","Index","","PE"
+"193D1566 Index","0","27","32.730000","","Monthly","INDX","IMF DOT Australia Imports from Philippines","Index","IMF DOT Australia Imports from","","Imports from Philippines","IMF DOT Australia Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","193D1566","Index","","AU"
+"199D1223 Index","0","27","135.870000","","Monthly","INDX","IMF DOT South Africa Imports from Brazil CIF","Index","IMF DOT South Africa Imports f","","Imports to Brazil","IMF DOT South Africa Imports f","N.A.","N.A.","03/31/2018","None","","","","","","","","","199D1223","Index","","ZA"
+"922D1142 Index","0","27","38.490000","","Monthly","INDX","IMF DOT Russia Imports from Norway CIF","Index","IMF DOT Russia Imports from No","","Imports from Norway","IMF DOT Russia Imports from No","N.A.","N.A.","03/31/2018","None","","","","","","","","","922D1142","Index","","RU"
+"ECUPEU 17 Index","0","27","9.100000","","Daily","INDX","Eurozone Unemployment Rate Forecast (%)","Index","Eurozone Unemployment Rate For","","Eurozone Unemploy Forecast","Eurozone Unemployment Rate For","N.A.","N.A.","02/20/2018","None","","02/16/2015","","","","","","","ECUPEU 17","Index","","EU"
+"CNYI6M Curncy","0","27","N.A.","","","PRC","USDCNY 6 Month Forward Implied Yield","FORWARD","CNYI6M Curncy","","CHINA RENMINBI","CNY FX Swap Imp Yld 6M","N.A.","N.A.","N.A.","None","N.A.","N.A.","","","","","","","CNYI6M","Curncy","Bloomberg BGN","CN"
+"RONV6M Curncy","0","27","7.186000","","","PRC","USDRON 6 Month ATM Implied Volatility","OPTION VOLATILITY","USDRONV6M Curncy","","N.A.","USD-RON OPT VOL 6M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","06/16/2008","","","","","","","USDRONV6M","Curncy","Composite(NY)","RO"
+"PENI3M Curncy","0","27","N.A.","","","PRC","USDPEN 3 Month Forward Implied Yield","FORWARD","PENI3M Curncy","","PERUVIAN SOL","PEN Fwd Imp Yld 3M","N.A.","N.A.","N.A.","None","N.A.","N.A.","","","","","","","PENI3M","Curncy","Bloomberg BGN","PE"
+"CLPV1M Curncy","0","27","10.250000","","","PRC","USDCLP 1 Month ATM Implied Volatility","OPTION VOLATILITY","USDCLPV1M Curncy","","N.A.","USD-CLP OPT VOL 1M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","07/28/1998","","","","","","","USDCLPV1M","Curncy","Composite(NY)","CL"
+"CADV1M Curncy","0","27","6.565000","","","PRC","USDCAD 1 Month ATM Implied Volatility","OPTION VOLATILITY","USDCADV1M Curncy","","N.A.","USD-CAD OPT VOL 1M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","08/06/1998","","","","","","","USDCADV1M","Curncy","Composite(NY)","CA"
+"PENV3M Curncy","0","27","4.045000","","","PRC","USDPEN 3 Month ATM Implied Volatility","OPTION VOLATILITY","USDPENV3M Curncy","","N.A.","USD-PEN OPT VOL 3M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","01/02/2007","","","","","","","USDPENV3M","Curncy","Bloomberg BGN","PE"
+"CNHV6M Curncy","0","27","5.850000","","","PRC","USDCNH 6 Month ATM Implied Volatility","OPTION VOLATILITY","USDCNHV6M Curncy","","N.A.","USD-CNH OptVol ATM 6M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","02/23/2011","","","","","","","USDCNHV6M","Curncy","Composite(NY)","CN"
+"GSGDX US Equity","0","27","8.940000","8.9452","","NAV","Goldman Sachs Investment Grade Credit Fund","Open-End Fund","GSGDX","Y","Goldman Sachs Investment Grade","GLDMN SCHS INV GRD CRDT-INST","09:30:00","20:30:00","07/13/2018","End of Day","07/13/2018","","","","","","0","US","GSGDX","Equity","US","US"
+"ACCBX US Equity","0","27","7.070000","7.0746","","NAV","Invesco Corporate Bond Fund","Open-End Fund","ACCBX","Y","Invesco Corporate Bond Fund","INVESCO CORPORATE BOND-A","09:30:00","20:30:00","07/13/2018","End of Day","07/13/2018","","","","","","0","US","ACCBX","Equity","US","US"
+"ECPIMY 15 Index","0","27","2.100000","","Daily","INDX","Malaysia CPI Economic Forecast (YoY %)","Index","Malaysia CPI Economic Forecast","","Malaysia CPI Forecast","Malaysia CPI Economic Forecast","N.A.","N.A.","02/29/2016","None","","02/27/2013","","","","","","","ECPIMY 15","Index","","MY"
+"ECPIID 19 Index","0","27","3.900000","","Daily","INDX","Indonesia CPI Economic Forecast (YoY %)","Index","Indonesia CPI Economic Forecas","","Indonesia CPI Forecast","Indonesia CPI Economic Forecas","N.A.","N.A.","07/16/2018","None","","02/14/2017","","","","","","","ECPIID 19","Index","","ID"
+"ECPIIN 26 Index","0","27","N.A.","","Daily","INDX","India CPI Economic Forecast (YoY %)","Index","India CPI Economic Forecast (Y","","India CPI Forecast","India CPI Economic Forecast (Y","N.A.","N.A.","","None","","","","","","","","","ECPIIN 26","Index","","IN"
+"ECPITH 10 Index","0","27","3.300000","","Daily","INDX","Thailand CPI Economic Forecast (YoY %)","Index","Thailand CPI Economic Forecast","","Thailand CPI Forecast","Thailand CPI Economic Forecast","N.A.","N.A.","02/28/2011","None","","06/18/2008","","","","","","","ECPITH 10","Index","","TH"
+"ECPISE 24 Index","0","27","N.A.","","Daily","INDX","Sweden CPI Economic Forecast (YoY %)","Index","Sweden CPI Economic Forecast (","","Sweden CPI Forecast","Sweden CPI Economic Forecast (","N.A.","N.A.","","None","","","","","","","","","ECPISE 24","Index","","SE"
+"ECPISE 08 Index","0","27","3.700000","","Daily","INDX","Sweden CPI Economic Forecast (YoY %)","Index","Sweden CPI Economic Forecast (","","Sweden CPI Forecast","Sweden CPI Economic Forecast (","N.A.","N.A.","02/19/2009","None","","10/08/2007","","","","","","","ECPISE 08","Index","","SE"
+"ECPIGR 19 Index","0","27","1.200000","","Daily","INDX","Greece CPI Economic Forecast (YoY %)","Index","Greece CPI Economic Forecast (","","Greece CPI Forecast","Greece CPI Economic Forecast (","N.A.","N.A.","07/16/2018","None","","07/17/2017","","","","","","","ECPIGR 19","Index","","GR"
+"ECPICO 26 Index","0","27","N.A.","","Daily","INDX","Colombia CPI Economic Forecast (YoY %)","Index","Colombia CPI Economic Forecast","","Colombia CPI Forecast","Colombia CPI Economic Forecast","N.A.","N.A.","","None","","","","","","","","","ECPICO 26","Index","","CO"
+"ECPIBR 30 Index","0","27","N.A.","","Daily","INDX","Brazil CPI Economic Forecast (YoY %)","Index","Brazil CPI Economic Forecast (","","Brazil CPI Forecast","Brazil CPI Economic Forecast (","N.A.","N.A.","","None","","","","","","","","","ECPIBR 30","Index","","BR"
+"ECPIBR 14 Index","0","27","6.300000","","Daily","INDX","Brazil CPI Economic Forecast (YoY %)","Index","Brazil CPI Economic Forecast (","","Brazil CPI Forecast","Brazil CPI Economic Forecast (","N.A.","N.A.","02/27/2015","None","","03/01/2012","","","","","","","ECPIBR 14","Index","","BR"
+"ECPIAR 20 Index","0","27","15.000000","","Daily","INDX","Argentina CPI Economic Forecast (YoY %)","Index","Argentina CPI Economic Forecas","","Argentina CPI Forecast","Argentina CPI Economic Forecas","N.A.","N.A.","07/16/2018","None","","03/29/2018","","","","","","","ECPIAR 20","Index","","AR"
+"111D1112 Index","0","27","5183.780000","","Monthly","INDX","IMF DOT United States Imports from United Kingdom CIF","Index","IMF DOT United States Imports","","Us Im Uk","IMF DOT United States Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","111D1112","Index","","US"
+"228D1223 Index","0","27","591.770000","","Monthly","INDX","IMF DOT Chile Imports from Brazil CIF","Index","IMF DOT Chile Imports from Bra","","Imports from Brazil","IMF DOT Chile Imports from Bra","N.A.","N.A.","03/31/2018","None","","","","","","","","","228D1223","Index","","CL"
+"223D1536 Index","0","27","116.890000","","Monthly","INDX","IMF DOT Brazil Imports from Indonesia CIF","Index","IMF DOT Brazil Imports from In","","Brz 1 Imp Indonesia","IMF DOT Brazil Imports from In","N.A.","N.A.","03/31/2018","None","","","","","","","","","223D1536","Index","","BR"
+"556D1273 Index","0","27",".050000","","Monthly","INDX","IMF DOT Maldives Imports from Mexico CIF","Index","IMF DOT Maldives Imports from","","Imports from Mexico","IMF DOT Maldives Imports from","N.A.","N.A.","02/28/2018","None","","","","","","","","","556D1273","Index","","MV"
+"536D1924 Index","0","27","2892.500000","","Monthly","INDX","IMF DOT Indonesia Imports from China CIF","Index","IMF DOT Indonesia Imports from","","Imports from China","IMF DOT Indonesia Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","536D1924","Index","","ID"
+"156D1233 Index","0","27","52.840000","","Monthly","INDX","IMF DOT Canada Imports from Colombia CIF","Index","IMF DOT Canada Imports from Co","","Can Imp Colombia","IMF DOT Canada Imports from Co","N.A.","N.A.","03/31/2018","None","","","","","","","","","156D1233","Index","","CA"
+"273D1233 Index","0","27","167.790000","","Monthly","INDX","IMF DOT Mexico Imports from Colombia CIF","Index","IMF DOT Mexico Imports from Co","","Imports from Colombia","IMF DOT Mexico Imports from Co","N.A.","N.A.","03/31/2018","None","","","","","","","","","273D1233","Index","","MX"
+"196D1146 Index","0","27","27.060000","","Monthly","INDX","IMF DOT New Zealand Imports from Switzerland CIF","Index","IMF DOT New Zealand Imports fr","","New Z Imp Switzerland","IMF DOT New Zealand Imports fr","N.A.","N.A.","03/31/2018","None","","","","","","","","","196D1146","Index","","NZ"
+"ECPITW 17 Index","0","27",".600000","","Daily","INDX","Taiwan CPI Economic Forecast (YoY %)","Index","Taiwan CPI Economic Forecast (","","Taiwan CPI Forecast","Taiwan CPI Economic Forecast (","N.A.","N.A.","02/28/2018","None","","03/25/2015","","","","","","","ECPITW 17","Index","","TW"
+"ECPISG 24 Index","0","27","N.A.","","Daily","INDX","Singapore CPI Economic Forecast (YoY %)","Index","Singapore CPI Economic Forecas","","Singapore CPI Forecast","Singapore CPI Economic Forecas","N.A.","N.A.","","None","","","","","","","","","ECPISG 24","Index","","SG"
+"ECPINZ 21 Index","0","27","N.A.","","Daily","INDX","New Zealand CPI Economic Forecast (YoY %)","Index","New Zealand CPI Economic Forec","","New Zealand CPI Forecast","New Zealand CPI Economic Forec","N.A.","N.A.","","None","","","","","","","","","ECPINZ 21","Index","","NZ"
+"ECPIZA 20 Index","0","27","5.200000","","Daily","INDX","South Africa CPI Economic Forecast (YoY %)","Index","South Africa CPI Economic Fore","","South Africa CPI Forecast","South Africa CPI Economic Fore","N.A.","N.A.","07/16/2018","None","","03/29/2018","","","","","","","ECPIZA 20","Index","","ZA"
+"ECPIZA 12 Index","0","27","5.700000","","Daily","INDX","South Africa CPI Economic Forecast (YoY %)","Index","South Africa CPI Economic Fore","","South Africa CPI Forecast","South Africa CPI Economic Fore","N.A.","N.A.","02/28/2013","None","","05/25/2010","","","","","","","ECPIZA 12","Index","","ZA"
+"ECPITR 26 Index","0","27","N.A.","","Daily","INDX","Turkey CPI Economic Forecast (YoY %)","Index","Turkey CPI Economic Forecast (","","Turkey CPI Forecast","Turkey CPI Economic Forecast (","N.A.","N.A.","","None","","","","","","","","","ECPITR 26","Index","","TR"
+"ECPITR 18 Index","0","27","11.800000","","Daily","INDX","Turkey CPI Economic Forecast (YoY %)","Index","Turkey CPI Economic Forecast (","","Turkey CPI Forecast","Turkey CPI Economic Forecast (","N.A.","N.A.","07/16/2018","None","","03/31/2016","","","","","","","ECPITR 18","Index","","TR"
+"ECUPTW 19 Index","0","27","3.800000","","Daily","INDX","Taiwan Unemployment Rate Forecast (%)","Index","Taiwan Unemployment Rate Forec","","Taiwan Unemployment Forecast","Taiwan Unemployment Rate Forec","N.A.","N.A.","07/16/2018","None","","03/22/2017","","","","","","","ECUPTW 19","Index","","TW"
+"ECUPTW 11 Index","0","27","4.400000","","Daily","INDX","Taiwan Unemployment Rate Forecast (%)","Index","Taiwan Unemployment Rate Forec","","Taiwan Unemployment Forecast","Taiwan Unemployment Rate Forec","N.A.","N.A.","12/23/2011","None","","08/19/2009","","","","","","","ECUPTW 11","Index","","TW"
+"ECGDNZ 13 Index","0","27","2.700000","","Daily","INDX","New Zealand GDP Economic Forecast (Annual YoY %)","Index","New Zealand GDP Economic Forec","","New Zealand GDP Forecast","New Zealand GDP Economic Forec","N.A.","N.A.","02/28/2014","None","","04/27/2011","","","","","","","ECGDNZ 13","Index","","NZ"
+"ECGDZA 28 Index","0","27","N.A.","","Daily","INDX","South Africa GDP Economic Forecast (Annual YoY %)","Index","South Africa GDP Economic Fore","","South Africa GDP Forecast","South Africa GDP Economic Fore","N.A.","N.A.","","None","","","","","","","","","ECGDZA 28","Index","","ZA"
+"ECGDZA 20 Index","0","27","2.300000","","Daily","INDX","South Africa GDP Economic Forecast (Annual YoY %)","Index","South Africa GDP Economic Fore","","South Africa GDP Forecast","South Africa GDP Economic Fore","N.A.","N.A.","07/16/2018","None","","03/29/2018","","","","","","","ECGDZA 20","Index","","ZA"
+"ECGDHU 27 Index","0","27","N.A.","","Daily","INDX","Hungary GDP Economic Forecast (Annual YoY %)","Index","Hungary GDP Economic Forecast","","Hungary GDP Forecast","Hungary GDP Economic Forecast","N.A.","N.A.","","None","","","","","","","","","ECGDHU 27","Index","","HU"
+"ECGDHU 19 Index","0","27","3.200000","","Daily","INDX","Hungary GDP Economic Forecast (Annual YoY %)","Index","Hungary GDP Economic Forecast","","Hungary GDP Forecast","Hungary GDP Economic Forecast","N.A.","N.A.","07/16/2018","None","","02/24/2017","","","","","","","ECGDHU 19","Index","","HU"
+"ECGDGB 24 Index","0","27","N.A.","","Daily","INDX","UK GDP Economic Forecast (Annual YoY %)","Index","UK GDP Economic Forecast (Annu","","UK GDP Forecast","UK GDP Economic Forecast (Annu","N.A.","N.A.","","None","","","","","","","","","ECGDGB 24","Index","","GB"
+"ECGDTH 23 Index","0","27","N.A.","","Daily","INDX","Thailand GDP Economic Forecast (Annual YoY %)","Index","Thailand GDP Economic Forecast","","Thailand GDP Forecast","Thailand GDP Economic Forecast","N.A.","N.A.","","None","","","","","","","","","ECGDTH 23","Index","","TH"
+"ECGDTH 15 Index","0","27","2.800000","","Daily","INDX","Thailand GDP Economic Forecast (Annual YoY %)","Index","Thailand GDP Economic Forecast","","Thailand GDP Forecast","Thailand GDP Economic Forecast","N.A.","N.A.","02/29/2016","None","","02/27/2013","","","","","","","ECGDTH 15","Index","","TH"
+"ECGDCH 22 Index","0","27","N.A.","","Daily","INDX","Switzerland GDP Economic Forecast (Annual YoY %)","Index","Switzerland GDP Economic Forec","","Switzerland GDP Forecast","Switzerland GDP Economic Forec","N.A.","N.A.","","None","","","","","","","","","ECGDCH 22","Index","","CH"
+"ECGDSE 29 Index","0","27","N.A.","","Daily","INDX","Sweden GDP Economic Forecast (Annual YoY %)","Index","Sweden GDP Economic Forecast (","","Sweden GDP Forecast","Sweden GDP Economic Forecast (","N.A.","N.A.","","None","","","","","","","","","ECGDSE 29","Index","","SE"
+"ECGDES 20 Index","0","27","2.000000","","Daily","INDX","Spain GDP Economic Forecast","Index","Spain GDP Economic Forecast","","Spain GDP Forecast","Spain GDP Economic Forecast","N.A.","N.A.","07/16/2018","None","","02/12/2018","","","","","","","ECGDES 20","Index","","ES"
+"ECUPTR 16 Index","0","27","10.800000","","Daily","INDX","Turkey Unemployment Rate Forecast (%)","Index","Turkey Unemployment Rate Forec","","Turkey Unemploy Forecast","Turkey Unemployment Rate Forec","N.A.","N.A.","02/28/2017","None","","03/27/2014","","","","","","","ECUPTR 16","Index","","TR"
+"RRSWM4 Curncy","0","27","8.190000","","","PRC","RUB SWAP VS MOSPRIME 4YR","SWAP","RRSWM4 Curncy","","RUSSIAN RUBLE SWAP 4 YR","RUB SWAP VS MOSPRIME 4YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","08/29/2006","","","","","","","RRSWM4","Curncy","Composite(NY)","RU"
+"TDSWNI7 Curncy","0","27","1.022500","","","PRC","TWD NDIRS (TAIBOR3M) 7YR","NDF SWAP","TDSWNI7 Curncy","","TAIWAN DOLLAR SWAP","TWD NDIRS (TAIBOR3M) 7YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","02/11/2015","","","","","","","TDSWNI7","Curncy","Composite(NY)","TW"
+"MRSV0C5 Curncy","0","27","13.810000","","","PRC","MYR OF SWPT %VOL 3M5Y","SWAPTION VOLATILITY","MRSV0C5 Curncy","","N.A.","MYR OF SWPT %VOL 3M5Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","04/13/2005","","","","","","","MRSV0C5","Curncy","Composite(NY)","MY"
+"RRSV0C10 Curncy","0","27","15.500000","","","PRC","RUB SWPT %VOL 3M10Y","SWAPTION VOLATILITY","RRSV0C10 Curncy","","N.A.","RUB SWPT %VOL 3M10Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","10/10/2012","","","","","","","RRSV0C10","Curncy","Composite(NY)","RU"
+"KWSWNI20 Curncy","0","27","2.300000","","","PRC","KRW SWAP NDIRS      20YR","NON-DELIVERABLE IRS SWAP","KWSWNI20 Curncy","","SOUTH KOREAN WON SWAP","KRW SWAP NDIRS      20YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","06/19/2006","","","","","","","KWSWNI20","Curncy","Composite(NY)","KR"
+"HFSW20 Curncy","0","27","3.670000","","","PRC","HUF SWAP ANN (VS 6M) 20Y","SWAP","HFSW20 Curncy","","HUNGARIAN FORINT SWAP 20 YR","HUF SWAP ANN (VS 6M) 20Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","12/09/2003","","","","","","","HFSW20","Curncy","Composite(NY)","HU"
+"TYSW20V3 Curncy","0","27","14.672500","","","PRC","TRY SWAP (vs 3M)   20 YR","SWAP","TYSW20V3 Curncy","","TURKISH LIRA SWAP 20 YR","TRY SWAP (vs 3M)   20 YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","08/10/2007","","","","","","","TYSW20V3","Curncy","Composite(NY)","TR"
+"SASV0C2 Curncy","0","27","2.550000","","","PRC","ZAR SWPT %VOL 3M2Y","SWAPTION VOLATILITY","SASV0C2 Curncy","","N.A.","ZAR SWPT %VOL 3M2Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","03/15/2002","","","","","","","SASV0C2","Curncy","Composite(NY)","ZA"
+"MRSWNI1 Curncy","0","27","3.712500","","","PRC","MYR SWAP NDIRS      1 YR","NON-DELIVERABLE IRS SWAP","MRSWNI1 Curncy","","MALAYSIAN RINGGIT SWAP","MYR SWAP NDIRS      1 YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","11/22/2006","","","","","","","MRSWNI1","Curncy","Composite(NY)","MY"
+"CCSV0C5 Curncy","0","27","N.A.","","","PRC","CNY OFF SWPT %VOL 3M5Y","SWAPTION VOLATILITY","CCSV0C5 Curncy","","N.A.","CNY OFF SWPT %VOL 3M5Y","N.A.","N.A.","N.A.","None","N.A.","04/16/2008","","","","","","","CCSV0C5","Curncy","Composite(NY)","CN"
+"TBSV0C10 Curncy","0","27","18.300000","","","PRC","THB ONSH SWPT%VOL 3M10Y","SWAPTION VOLATILITY","TBSV0C10 Curncy","","N.A.","THB ONSH SWPT%VOL 3M10Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","07/03/2002","","","","","","","TBSV0C10","Curncy","Composite(NY)","TH"
+"TYSW4V3 Curncy","0","27","19.965000","","","PRC","TRY SWAP (VS 3M)    4 YR","SWAP","TYSW4V3 Curncy","","TURKISH LIRA SWAP 4 YR","TRY SWAP (VS 3M)    4 YR","17:00:00","16:59:59","07/16/2018","None","07/16/2018","05/19/2005","","","","","","","TYSW4V3","Curncy","Composite(NY)","TR"
+"HFSV0C2 Curncy","0","27","285.130000","","","PRC","HUF SWPT %VOL ATM 3M2Y","SWAPTION VOLATILITY","HFSV0C2 Curncy","","N.A.","HUF SWPT %VOL ATM 3M2Y","17:00:00","16:59:59","07/16/2018","None","07/16/2018","01/24/2008","","","","","","","HFSV0C2","Curncy","Composite(NY)","HU"
+"CKSV0C30 Curncy","0","27","N.A.","","","PRC","CZK SWPT %VOL 3M30Y","SWAPTION VOLATILITY","CKSV0C30 Curncy","","N.A.","CZK SWPT %VOL 3M30Y","N.A.","N.A.","N.A.","None","N.A.","01/26/2011","","","","","","","CKSV0C30","Curncy","Composite(NY)","CZ"
+"542D1566 Index","0","27","272.210000","","Monthly","INDX","IMF DOT South Korea Imports from Philippines CIF","Index","IMF DOT South Korea Imports fr","","Imports from Philippines","IMF DOT South Korea Imports fr","N.A.","N.A.","03/31/2018","None","","","","","","","","","542D1566","Index","","KR"
+"233D1111 Index","0","27","1017.820000","","Monthly","INDX","IMF DOT Colombia Imports from United States CIF","Index","IMF DOT Colombia Imports from","","Imports from United States","IMF DOT Colombia Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","233D1111","Index","","CO"
+"111D1144 Index","0","27","1121.900000","","Monthly","INDX","IMF DOT United States Imports from Sweden CIF","Index","IMF DOT United States Imports","","Us Im Swe","IMF DOT United States Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","111D1144","Index","","US"
+"193D1536 Index","0","27","261.770000","","Monthly","INDX","IMF DOT Australia Imports from Indonesia","Index","IMF DOT Australia Imports from","","Imports from Indonesia","IMF DOT Australia Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","193D1536","Index","","AU"
+"186D1273 Index","0","27","57.570000","","Monthly","INDX","IMF DOT Turkey Imports from Mexico CIF","Index","IMF DOT Turkey Imports from Me","","Trk Imp Mexico","IMF DOT Turkey Imports from Me","N.A.","N.A.","03/31/2018","None","","","","","","","","","186D1273","Index","","TR"
+"158D1924 Index","0","27","14929.690000","","Monthly","INDX","IMF DOT Japan Imports from China CIF","Index","IMF DOT Japan Imports from Chi","","Imports to China","IMF DOT Japan Imports from Chi","N.A.","N.A.","03/31/2018","None","","","","","","","","","158D1924","Index","","JP"
+"111D1146 Index","0","27","3390.600000","","Monthly","INDX","IMF DOT United States Imports from Switzerland CIF","Index","IMF DOT United States Imports","","Us Im Swi","IMF DOT United States Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","111D1146","Index","","US"
+"534D1228 Index","0","27","184.120000","","Monthly","INDX","IMF DOT India Imports from Chile CIF","Index","IMF DOT India Imports from Chi","","Imports from Chile","IMF DOT India Imports from Chi","N.A.","N.A.","03/31/2018","None","","","","","","","","","534D1228","Index","","IN"
+"196D1144 Index","0","27","27.440000","","Monthly","INDX","IMF DOT New Zealand Imports from Sweden CIF","Index","IMF DOT New Zealand Imports fr","","New Z Imp Sweden","IMF DOT New Zealand Imports fr","N.A.","N.A.","03/31/2018","None","","","","","","","","","196D1144","Index","","NZ"
+"556D1199 Index","0","27",".530000","","Monthly","INDX","IMF DOT Maldives Imports from South Africa CIF","Index","IMF DOT Maldives Imports from","","Imports from South Africa","IMF DOT Maldives Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","556D1199","Index","","MV"
+"233D1186 Index","0","27","32.700000","","Monthly","INDX","IMF DOT Colombia Imports from Turkey CIF","Index","IMF DOT Colombia Imports from","","Imports from Turkey","IMF DOT Colombia Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","233D1186","Index","","CO"
+"924D1273 Index","0","27","1047.670000","","Monthly","INDX","IMF DOT China Mainland Imports from Mexico CIF","Index","IMF DOT China Mainland Imports","","Imports from Mexico","IMF DOT China Mainland Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","924D1273","Index","","CN"
+"542D1534 Index","0","27","524.380000","","Monthly","INDX","IMF DOT South Korea Imports from India CIF","Index","IMF DOT South Korea Imports fr","","Imports from India","IMF DOT South Korea Imports fr","N.A.","N.A.","03/31/2018","None","","","","","","","","","542D1534","Index","","KR"
+"156D1566 Index","0","27","101.650000","","Monthly","INDX","IMF DOT Canada Imports from Philippines CIF","Index","IMF DOT Canada Imports from Ph","","Can Imp Philippines","IMF DOT Canada Imports from Ph","N.A.","N.A.","03/31/2018","None","","","","","","","","","156D1566","Index","","CA"
+"USDARSV1M Curncy","0","27","10.000000","","","PRC","USDARS 1 Month ATM Implied Volatility","OPTION VOLATILITY","USDARSV1M Curncy","","N.A.","USD-ARS OPT VOL 1M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","11/28/2001","","","","","","","USDARSV1M","Curncy","Composite(NY)","AR"
+"M2EF Index","0","27","2370.000000","2370.0000","","INDX","MSCI Emerging Markets Gross Total Return USD Index","Equity Index","M2EF","Y","MSCI Emerging Markets Gross To","MSCI EM GR","17:30:00","17:00:00","07/16/2018","End of Day","07/16/2018","12/31/1987","","","","","","","M2EF","Index","","MULT"
+"MXWD Index","0","27","514.534700","514.6606","","INDX","MSCI ACWI Index","Equity Index","MXWD","Y","MSCI ACWI Index","MSCI ACWI","17:30:00","17:00:00","07/16/2018","End of Day","07/16/2018","12/31/1987","","","","","","","MXWD","Index","","MULT"
+"ECPICH 18 Index","0","27",".800000","","Daily","INDX","Switzerland CPI Economic Forecast (YoY %)","Index","Switzerland CPI Economic Forec","","Switzerland CPI Forecast","Switzerland CPI Economic Forec","N.A.","N.A.","07/16/2018","None","","03/16/2016","","","","","","","ECPICH 18","Index","","CH"
+"ECPIMX 19 Index","0","27","3.600000","","Daily","INDX","Mexico CPI Economic Forecast (YoY %)","Index","Mexico CPI Economic Forecast (","","Mexico CPI Forecast","Mexico CPI Economic Forecast (","N.A.","N.A.","07/16/2018","None","","02/16/2017","","","","","","","ECPIMX 19","Index","","MX"
+"ECPIFR 26 Index","0","27","N.A.","","Daily","INDX","France CPI Economic Forecast","Index","France CPI Economic Forecast","","France CPI Forecast","France CPI Economic Forecast","N.A.","N.A.","","None","","","","","","","","","ECPIFR 26","Index","","FR"
+"ECPIEU 09 Index","0","27",".300000","","Daily","INDX","Eurozone CPI Economic Forecast (YoY %)","Index","Eurozone CPI Economic Forecast","","Eurozone CPI Forecast","Eurozone CPI Economic Forecast","N.A.","N.A.","02/26/2010","None","","12/07/2007","","","","","","","ECPIEU 09","Index","","EU"
+"ECUPES 26 Index","0","27","N.A.","","Daily","INDX","Spain Unemployment Rate Forecast","Index","Spain Unemployment Rate Foreca","","Spain Unemploy Forecast","Spain Unemployment Rate Foreca","N.A.","N.A.","","None","","","","","","","","","ECUPES 26","Index","","ES"
+"ECUPMX 13 Index","0","27","5.040000","","Daily","INDX","Mexico Unemployment Rate Forecast (%)","Index","Mexico Unemployment Rate Forec","","Mexico Unemployment Forecast","Mexico Unemployment Rate Forec","N.A.","N.A.","01/24/2014","None","","11/21/2011","","","","","","","ECUPMX 13","Index","","MX"
+"ECUPCO 10 Index","0","27","11.800000","","Daily","INDX","Colombia Unemployment Rate Forecast (%)","Index","Colombia Unemployment Rate For","","Colombia Unemployment Forecast","Colombia Unemployment Rate For","N.A.","N.A.","02/28/2011","None","","09/05/2008","","","","","","","ECUPCO 10","Index","","CO"
+"ECUPCL 24 Index","0","27","N.A.","","Daily","INDX","Chile Unemployment Rate Forecast (%)","Index","Chile Unemployment Rate Foreca","","Chile Unemploy Forecast","Chile Unemployment Rate Foreca","N.A.","N.A.","","None","","","","","","","","","ECUPCL 24","Index","","CL"
+"TWDV3M Curncy","0","27","5.691000","","","PRC","USDTWD 3 Month ATM Implied Volatility","OPTION VOLATILITY","USDTWDV3M Curncy","","N.A.","USD-TWD OPT VOL 3M","17:00:00","16:59:59","07/16/2018","None","07/16/2018","02/23/1999","","","","","","","USDTWDV3M","Curncy","Composite(NY)","TW"
+"924D1146 Index","0","27","4189.340000","","Monthly","INDX","IMF DOT China Mainland Imports from Switzerland CIF","Index","IMF DOT China Mainland Imports","","Imports from Switzerland","IMF DOT China Mainland Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","924D1146","Index","","CN"
+"112D1158 Index","0","27","1147.290000","","Monthly","INDX","IMF DOT United Kingdom Imports from Japan CIF","Index","IMF DOT United Kingdom Imports","","Imports from Japan","IMF DOT United Kingdom Imports","N.A.","N.A.","03/31/2018","None","","","","","","","","","112D1158","Index","","GB"
+"556D1566 Index","0","27",".020000","","Monthly","INDX","IMF DOT Maldives Imports from Philippines CIF","Index","IMF DOT Maldives Imports from","","Imports from Philippines","IMF DOT Maldives Imports from","N.A.","N.A.","03/31/2018","None","","","","","","","","","556D1566","Index","","MV"
+"223D1186 Index","0","27","44.450000","","Monthly","INDX","IMF DOT Brazil Imports from Turkey CIF","Index","IMF DOT Brazil Imports from Tu","","Brz 1 Imp Turkey","IMF DOT Brazil Imports from Tu","N.A.","N.A.","03/31/2018","None","","","","","","","","","223D1186","Index","","BR"
+"156D1199 Index","0","27","49.620000","","Monthly","INDX","IMF DOT Canada Imports from South Africa CIF","Index","IMF DOT Canada Imports from So","","Can Imp South Africa","IMF DOT Canada Imports from So","N.A.","N.A.","03/31/2018","None","","","","","","","","","156D1199","Index","","CA"
+"998D1144 Index","0","27","9531.860000","","Monthly","INDX","IMF DOT European Union (Agg) Imports from Sweden CIF","Index","IMF DOT European Union (Agg) I","","Imports from Sweden","IMF DOT European Union (Agg) I","N.A.","N.A.","03/31/2018","None","","","","","","","","","998D1144","Index","",""
+'''
+X_GETDATA_INPUT = '''
+START-OF-FILE
+RUNDATE=20180716
+PROGRAMFLAG=one-shot
+PROGRAMNAME=getdata
+COMPRESS=yes
+DELIMITER=|
+FIRMNAME=pimco
+USERNUMBER=183888
+REPLYFILENAME=20180716.P.1610.0.txt
+START-OF-FIELDS
+LAST_TRADEABLE_DT
+END-OF-FIELDS
+
+TIMESTARTED=Mon Jul 16 19:24:30 EDT 2018
+START-OF-DATA
+##EDM87-LAST_TRADEABLE_DT##
+EDM87 Comdty|0|1|06/15/1987|
+##EDU89-LAST_TRADEABLE_DT##
+EDU89 Comdty|0|1|09/18/1989|
+##EDZ89-LAST_TRADEABLE_DT##
+EDZ89 Comdty|0|1|12/18/1989|
+##EDH90-LAST_TRADEABLE_DT##
+EDH90 Comdty|0|1|03/19/1990|
+END-OF-DATA
+TIMEFINISHED=Mon Jul 16 19:24:46 EDT 2018
+END-OF-FILE
+
+'''
+X_GETDATA_OUTPUT = '''"REQUESTOR_TAG","SECURITY","ROW_STATUS","NUM_OF_FIELDS","LAST_TRADEABLE_DT"
+"##EDM87-LAST_TRADEABLE_DT##","EDM87 Comdty","0","1","06/15/1987"
+"##EDU89-LAST_TRADEABLE_DT##","EDU89 Comdty","0","1","09/18/1989"
+"##EDZ89-LAST_TRADEABLE_DT##","EDZ89 Comdty","0","1","12/18/1989"
+"##EDH90-LAST_TRADEABLE_DT##","EDH90 Comdty","0","1","03/19/1990"
+'''
+X_GETHISTORY_INPUT = '''
+START-OF-FILE
+RUNDATE=20180716
+DATERANGE=20180509|20180514
+PROGRAMNAME=gethistory
+PROGRAMFLAG=one-shot
+COMPRESS=yes
+DELIMITER=|
+FIRMNAME=pimco
+HIST_FORMAT=vertical
+USERNUMBER=183888
+REPLYFILENAME=20180716.P.1611.0.txt
+START-OF-FIELDS
+PX_LAST
+END-OF-FIELDS
+
+TIMESTARTED=Mon Jul 16 19:24:17 EDT 2018
+START-OF-DATA
+##PFG-PRICE##
+START SECURITY|PFG Equity|PX_LAST|
+PFG Equity|05/09/2018|57.72|
+PFG Equity|05/10/2018|58.75|
+PFG Equity|05/11/2018|59.03|
+PFG Equity|05/14/2018|59.11|
+END SECURITY|PFG Equity|PX_LAST|0|
+##SHW-PRICE##
+START SECURITY|SHW Equity|PX_LAST|
+SHW Equity|05/09/2018|380.81|
+SHW Equity|05/10/2018|380.45|
+SHW Equity|05/11/2018|381.09|
+SHW Equity|05/14/2018|384.58|
+END SECURITY|SHW Equity|PX_LAST|0|
+##AAON-PRICE##
+START SECURITY|AAON Equity|PX_LAST|
+AAON Equity|05/09/2018|30.15|
+AAON Equity|05/10/2018|29.7|
+AAON Equity|05/11/2018|29.55|
+AAON Equity|05/14/2018|29.5|
+END SECURITY|AAON Equity|PX_LAST|0|
+##MCS-PRICE##
+START SECURITY|MCS Equity|PX_LAST|
+MCS Equity|05/09/2018|31.9|
+MCS Equity|05/10/2018|32.2|
+MCS Equity|05/11/2018|32.2|
+MCS Equity|05/14/2018|31.9|
+END SECURITY|MCS Equity|PX_LAST|0|
+##AIR-PRICE##
+START SECURITY|AIR Equity|PX_LAST|
+AIR Equity|05/09/2018|47.11|
+AIR Equity|05/10/2018|47.12|
+AIR Equity|05/11/2018|46.81|
+AIR Equity|05/14/2018|46.37|
+END SECURITY|AIR Equity|PX_LAST|0|
+END-OF-DATA
+TIMEFINISHED=Mon Jul 16 19:24:17 EDT 2018
+END-OF-FILE
+'''
+X_GETHISTORY_OUTPUT = '''"REQUESTOR_TAG","SECURITY","ROW_STATUS","ASOF_DATE","MNEMONIC","VALUE"
+"##PFG-PRICE##","PFG Equity","0","05/09/2018","PX_LAST","57.72"
+"##PFG-PRICE##","PFG Equity","0","05/10/2018","PX_LAST","58.75"
+"##PFG-PRICE##","PFG Equity","0","05/11/2018","PX_LAST","59.03"
+"##PFG-PRICE##","PFG Equity","0","05/14/2018","PX_LAST","59.11"
+"##SHW-PRICE##","SHW Equity","0","05/09/2018","PX_LAST","380.81"
+"##SHW-PRICE##","SHW Equity","0","05/10/2018","PX_LAST","380.45"
+"##SHW-PRICE##","SHW Equity","0","05/11/2018","PX_LAST","381.09"
+"##SHW-PRICE##","SHW Equity","0","05/14/2018","PX_LAST","384.58"
+"##AAON-PRICE##","AAON Equity","0","05/09/2018","PX_LAST","30.15"
+"##AAON-PRICE##","AAON Equity","0","05/10/2018","PX_LAST","29.7"
+"##AAON-PRICE##","AAON Equity","0","05/11/2018","PX_LAST","29.55"
+"##AAON-PRICE##","AAON Equity","0","05/14/2018","PX_LAST","29.5"
+"##MCS-PRICE##","MCS Equity","0","05/09/2018","PX_LAST","31.9"
+"##MCS-PRICE##","MCS Equity","0","05/10/2018","PX_LAST","32.2"
+"##MCS-PRICE##","MCS Equity","0","05/11/2018","PX_LAST","32.2"
+"##MCS-PRICE##","MCS Equity","0","05/14/2018","PX_LAST","31.9"
+"##AIR-PRICE##","AIR Equity","0","05/09/2018","PX_LAST","47.11"
+"##AIR-PRICE##","AIR Equity","0","05/10/2018","PX_LAST","47.12"
+"##AIR-PRICE##","AIR Equity","0","05/11/2018","PX_LAST","46.81"
+"##AIR-PRICE##","AIR Equity","0","05/14/2018","PX_LAST","46.37"
+'''
+
+X_GETHISTORY_IMPROPER_INPUT = '''
+START-OF-FILE
+RUNDATE=20180716
+DATERANGE=20180509|20180514
+PROGRAMNAME=gethistory
+PROGRAMFLAG=one-shot
+COMPRESS=yes
+DELIMITER=|
+FIRMNAME=pimco
+HIST_FORMAT=vertical
+USERNUMBER=183888
+REPLYFILENAME=20180716.P.1611.0.txt
+START-OF-FIELDS
+PX_LAST
+END-OF-FIELDS
+
+TIMESTARTED=Mon Jul 16 19:24:17 EDT 2018
+START-OF-DATA
+##PFG-PRICE##
+START SECURITY|PFG Equity|PX_LAST|
+PFG Equity|05/09/2018|57.72|
+PFG Equity|05/10/2018|58.75|
+PFG Equity|05/11/2018|59.03|
+PFG Equity|05/14/2018|59.11|
+END SECURITY|PFG Equity|PX_LAST|0|
+##SHW-PRICE##
+START SECURITY|SHW Equity|PX_LAST|
+SHW Equity|05/09/2018|380.81|
+SHW Equity|05/10/2018|380.45|
+SHW Equity|05/11/2018|381.09|
+SHW Equity|05/14/2018|384.58|
+END SECURITY|SHW Equity|PX_LAST||
+##AAON-PRICE##
+START SECURITY|AAON Equity|PX_LAST|
+AAON Equity|05/09/2018|30.15|
+AAON Equity|05/10/2018|29.7|
+AAON Equity|05/11/2018|29.55|
+AAON Equity|05/14/2018|29.5|
+END SECURITY|AAON Equity|PX_LAST|
+##MCS-PRICE##
+START SECURITY|MCS Equity|PX_LAST|
+MCS Equity|05/09/2018|31.9|
+MCS Equity|05/10/2018|32.2|
+MCS Equity|05/11/2018|32.2|
+MCS Equity|05/14/2018|31.9|
+END SECURITY|MCS Equity|PX_LAST| |
+##AIR-PRICE##
+START SECURITY|AIR Equity|PX_LAST|
+AIR Equity|05/09/2018|47.11|
+AIR Equity|05/10/2018|47.12|
+AIR Equity|05/11/2018|46.81|
+AIR Equity|05/14/2018|46.37|
+END SECURITY|AIR Equity|PX_LAST|10|
+END-OF-DATA
+TIMEFINISHED=Mon Jul 16 19:24:17 EDT 2018
+END-OF-FILE
+'''
+
+X_GETHISTORY_IMPROPER_OUTPUT = '''"REQUESTOR_TAG","SECURITY","ROW_STATUS","ASOF_DATE","MNEMONIC","VALUE"
+"##PFG-PRICE##","PFG Equity","0","05/09/2018","PX_LAST","57.72"
+"##PFG-PRICE##","PFG Equity","0","05/10/2018","PX_LAST","58.75"
+"##PFG-PRICE##","PFG Equity","0","05/11/2018","PX_LAST","59.03"
+"##PFG-PRICE##","PFG Equity","0","05/14/2018","PX_LAST","59.11"
+"##SHW-PRICE##","SHW Equity","0","05/09/2018","PX_LAST","380.81"
+"##SHW-PRICE##","SHW Equity","0","05/10/2018","PX_LAST","380.45"
+"##SHW-PRICE##","SHW Equity","0","05/11/2018","PX_LAST","381.09"
+"##SHW-PRICE##","SHW Equity","0","05/14/2018","PX_LAST","384.58"
+"##AAON-PRICE##","AAON Equity","0","05/09/2018","PX_LAST","30.15"
+"##AAON-PRICE##","AAON Equity","0","05/10/2018","PX_LAST","29.7"
+"##AAON-PRICE##","AAON Equity","0","05/11/2018","PX_LAST","29.55"
+"##AAON-PRICE##","AAON Equity","0","05/14/2018","PX_LAST","29.5"
+"##MCS-PRICE##","MCS Equity","0","05/09/2018","PX_LAST","31.9"
+"##MCS-PRICE##","MCS Equity","0","05/10/2018","PX_LAST","32.2"
+"##MCS-PRICE##","MCS Equity","0","05/11/2018","PX_LAST","32.2"
+"##MCS-PRICE##","MCS Equity","0","05/14/2018","PX_LAST","31.9"
+"##AIR-PRICE##","AIR Equity","10","05/09/2018","PX_LAST","47.11"
+"##AIR-PRICE##","AIR Equity","10","05/10/2018","PX_LAST","47.12"
+"##AIR-PRICE##","AIR Equity","10","05/11/2018","PX_LAST","46.81"
+"##AIR-PRICE##","AIR Equity","10","05/14/2018","PX_LAST","46.37"
+'''
+
+X_GETHISTORY_INPUT_WITHOUT_REQUESTOR_TAG = '''
+START-OF-FILE
+RUNDATE=20180716
+DATERANGE=20180509|20180514
+PROGRAMNAME=gethistory
+PROGRAMFLAG=one-shot
+COMPRESS=yes
+DELIMITER=|
+FIRMNAME=pimco
+HIST_FORMAT=vertical
+USERNUMBER=183888
+REPLYFILENAME=20180716.P.1611.0.txt
+START-OF-FIELDS
+PX_LAST
+END-OF-FIELDS
+
+TIMESTARTED=Mon Jul 16 19:24:17 EDT 2018
+START-OF-DATA
+START SECURITY|PFG Equity|PX_LAST|
+PFG Equity|05/09/2018|57.72|
+PFG Equity|05/10/2018|58.75|
+PFG Equity|05/11/2018|59.03|
+PFG Equity|05/14/2018|59.11|
+END SECURITY|PFG Equity|PX_LAST|0|
+START SECURITY|SHW Equity|PX_LAST|
+SHW Equity|05/09/2018|380.81|
+SHW Equity|05/10/2018|380.45|
+SHW Equity|05/11/2018|381.09|
+SHW Equity|05/14/2018|384.58|
+END SECURITY|SHW Equity|PX_LAST|0|
+START SECURITY|AAON Equity|PX_LAST|
+AAON Equity|05/09/2018|30.15|
+AAON Equity|05/10/2018|29.7|
+AAON Equity|05/11/2018|29.55|
+AAON Equity|05/14/2018|29.5|
+END SECURITY|AAON Equity|PX_LAST|0|
+START SECURITY|MCS Equity|PX_LAST|
+MCS Equity|05/09/2018|31.9|
+MCS Equity|05/10/2018|32.2|
+MCS Equity|05/11/2018|32.2|
+MCS Equity|05/14/2018|31.9|
+END SECURITY|MCS Equity|PX_LAST|0|
+START SECURITY|AIR Equity|PX_LAST|
+AIR Equity|05/09/2018|47.11|
+AIR Equity|05/10/2018|47.12|
+AIR Equity|05/11/2018|46.81|
+AIR Equity|05/14/2018|46.37|
+END SECURITY|AIR Equity|PX_LAST|0|
+END-OF-DATA
+TIMEFINISHED=Mon Jul 16 19:24:17 EDT 2018
+END-OF-FILE
+'''
+
+X_GETHISTORY_OUTPUT_WITHOUT_REQUESTOR_TAG = '''"SECURITY","ROW_STATUS","ASOF_DATE","MNEMONIC","VALUE"
+"PFG Equity","0","05/09/2018","PX_LAST","57.72"
+"PFG Equity","0","05/10/2018","PX_LAST","58.75"
+"PFG Equity","0","05/11/2018","PX_LAST","59.03"
+"PFG Equity","0","05/14/2018","PX_LAST","59.11"
+"SHW Equity","0","05/09/2018","PX_LAST","380.81"
+"SHW Equity","0","05/10/2018","PX_LAST","380.45"
+"SHW Equity","0","05/11/2018","PX_LAST","381.09"
+"SHW Equity","0","05/14/2018","PX_LAST","384.58"
+"AAON Equity","0","05/09/2018","PX_LAST","30.15"
+"AAON Equity","0","05/10/2018","PX_LAST","29.7"
+"AAON Equity","0","05/11/2018","PX_LAST","29.55"
+"AAON Equity","0","05/14/2018","PX_LAST","29.5"
+"MCS Equity","0","05/09/2018","PX_LAST","31.9"
+"MCS Equity","0","05/10/2018","PX_LAST","32.2"
+"MCS Equity","0","05/11/2018","PX_LAST","32.2"
+"MCS Equity","0","05/14/2018","PX_LAST","31.9"
+"AIR Equity","0","05/09/2018","PX_LAST","47.11"
+"AIR Equity","0","05/10/2018","PX_LAST","47.12"
+"AIR Equity","0","05/11/2018","PX_LAST","46.81"
+"AIR Equity","0","05/14/2018","PX_LAST","46.37"
+'''
+
+X_OUTPUT_REQUESTOR_TAG = '''"REQUESTOR_TAG","col2","col3"
+"##test1##","3","foo"
+"##test2##","5","bar"
+"##test3##","7","baz""REQUESTOR_TAG","col2","col3"
+"test1","3","foo"
+"test2","5","bar"
+"test3","7","baz"
+'''
+
+X_CSV_FILE_WITH_NO_REQUESTOR_TAG_COLUMN = '''"col1","col2","col3"
+"##test1##","3","foo"
+"##test2##","5","bar"
+"##test3##","7","baz""col1","col2","col3"
+"##test1##","3","foo"
+"##test2##","5","bar"
+"##test3##","7","baz"
+'''
+
+X_INPUT_STRG_TEMP = '''"{col1}","col2","col3"
+"##test1##","3","foo"
+"##test2##","5","bar"
+"##test3##","7","baz"'''
+
+X_BT_PARSER_INSTANCE = BtParser('GETDATA', 'VERTICAL')
+
+X_INPUT_DICT_VALIDATE_SECURITY_COLUMN = {'security': ['/ticker/AS3432471@BVAL Govt', '/cusip/AS3432471@BVAL Govt',
+                                                      '/isin/AS3432471@BVAL Govt', '/tick/er/AS3432471@BVAL Govt',
+                                                      'AS3432471@BVAL Govt'],
+                                         'ASOF_DATE': ['2018-08-30', '2018-08-31', '2018-09-03', '2018-08-04',
+                                                       '2018-09-05'],
+                                         'MNEMONIC': ['test', 'test', 'test', 'test', 'test'],
+                                         'VALUE': ['test', 'test', 'test', 'test', 'test']}
+
+X_OUTPUT_DICT_VALIDATE_SECURITY_COLUMN = {'security': ['AS3432471@BVAL Govt', 'AS3432471@BVAL Govt',
+                                                       'AS3432471@BVAL Govt',
+                                                       'AS3432471@BVAL Govt', 'AS3432471@BVAL Govt'],
+                                          'ASOF_DATE': ['2018-08-30', '2018-08-31', '2018-09-03', '2018-08-04',
+                                                        '2018-09-05'],
+                                          'MNEMONIC': ['test', 'test', 'test', 'test', 'test'],
+                                          'VALUE': ['test', 'test', 'test', 'test', 'test']}
+
+X_INPUT_DATAFRAME_VALIDATE_SECURITY_COLUMN = pandas.DataFrame(X_INPUT_DICT_VALIDATE_SECURITY_COLUMN)
+
+X_OUTPUT_DATAFRAME_VALIDATE_SECURITY_COLUMN = pandas.DataFrame(X_OUTPUT_DICT_VALIDATE_SECURITY_COLUMN)
+
+
+@pytest.fixture(name='csv_buffer')
+def csv_buffer_fixture():
+    buffer_ = StringIO()
+    wrapper = codecs.getwriter("utf8")(buffer_)
+    return wrapper
+
+
+@pytest.fixture(name='csv_buffer_arg')
+def csv_buffer_with_input_string_fixture():
+    buffer_ = StringIO(X_INPUT_STRG_TEMP.format(col1='REQUESTOR_TAG'))
+    return codecs.getwriter("utf8")(buffer_)
+
+
+@pytest.fixture(name='csv_buffer_no_requestor_tag')
+def csv_buffer_no_requestor_tag_fixture():
+    buffer_ = StringIO(X_INPUT_STRG_TEMP.format(col1='col1'))
+    return codecs.getwriter("utf8")(buffer_)
+
+
+@pytest.mark.parametrize('x_payload,x_output', [
+    (X_PAYLOAD_DICT_ERROR1, X_OUTPUT_ERROR1_VERTICAL),
+    (X_PAYLOAD_DICT_ERROR2, X_OUTPUT_ERROR2_VERTICAL)
+])
+def test_json2csv_error(x_payload, x_output, csv_buffer):
+    json2csv(x_payload, csv_buffer, 'VERTICAL', COLS, 'GETDATA')
+    assert x_output == csv_buffer.stream.getvalue()
+
+
+def test_json2csv_horizontal(csv_buffer):
+    json2csv(X_PAYLOAD, csv_buffer, 'HORIZONTAL', COLS, 'GETDATA')
+    # number of securities == number of lines - 1 (header)
+    assert len(X_PAYLOAD_DICT) == csv_buffer.stream.getvalue().count('\n') - 1
+
+
+def test_json2csv_vertical(csv_buffer):
+    json2csv(X_PAYLOAD, csv_buffer, 'VERTICAL', COLS, 'GETDATA')
+    # 3 == number of columns in the output
+    assert (3 == csv_buffer.stream.getvalue().split('\n')[0].count(',')) + 1
+
+
+@pytest.mark.parametrize('x_payload,x_output,fmt,cols,request_type', [
+    (X_PAYLOAD, X_OUTPUT_HORIZONTAL_COLS, 'HORIZONTAL', COLS, 'GETDATA'),
+    (X_PAYLOAD, X_OUTPUT_HORIZONTAL_COLS2, 'HORIZONTAL', COLS2, 'GETDATA'),
+    (X_PAYLOAD, X_OUTPUT_HORIZONTAL_COLS3, 'HORIZONTAL', COLS3, 'GETDATA'),
+    (X_PAYLOAD, X_OUTPUT_VERTICAL, 'VERTICAL', COLS, 'GETDATA'),
+    (X_PAYLOAD_HISTORY1, X_OUTPUT_HISTORY1, 'HORIZONTAL', COLS_HIST1, 'GETHISTORY'),
+    (X_PAYLOAD_HISTORY2, X_OUTPUT_HISTORY2, 'HORIZONTAL', COLS_HIST2, 'GETHISTORY'),
+    (X_PAYLOAD_HISTORY3, X_OUTPUT_HISTORY3, 'HORIZONTAL', COLS_HIST2, 'GETHISTORY'),
+    (X_PAYLOAD_HISTORY3, X_OUTPUT_HISTORY4, 'VERTICAL', COLS_HIST2, 'GETHISTORY')
+
+])
+def test_json2csv(x_payload, x_output, csv_buffer, fmt, cols, request_type):
+    json2csv(x_payload, csv_buffer, fmt, cols, request_type)
+    assert x_output == csv_buffer.stream.getvalue()
+
+
+def test_parser_bbgdl_file(mocker, x_open, csv_buffer_arg):
+    mock_repo = mocker.patch('etl.bbg_transport.parser.BtParser.bulk_fmt_repo')
+    mock_rows = []
+    mock_repo.list_by_bulk_format_mnemonic.return_value = mock_rows
+    x_file_stream = mocker.patch('etl.bbg_transport.parser.file_stream')
+    x_file_stream.return_value = X_BLOOMBERG_DL_INPUT.splitlines()
+
+    x_btrepobase_init = mocker.patch.object(BtRepoBase, '__init__')
+    x_btrepobase_init.return_value = None
+
+    parser = BtParser('GETDATA', 'HORIZONTAL')
+
+    x_calls = [mock.call(line + '\r\n') for line in X_BLOOMBERG_DL_OUTPUT.splitlines()]
+    parser.parse_files('bloomberg_dl_1.txt', csv_buffer_arg)
+    assert x_calls == x_open.return_value.write.mock_calls
+
+
+def test_parser_bbg_batch_get_data_file(mocker, x_open, csv_buffer_arg):
+    mock_repo = mocker.patch('etl.bbg_transport.parser.BtParser.bulk_fmt_repo')
+    mock_rows = []
+    mock_repo.list_by_bulk_format_mnemonic.return_value = mock_rows
+    x_file_stream = mocker.patch('etl.bbg_transport.parser.file_stream')
+    x_file_stream.return_value = X_GETDATA_INPUT.splitlines()
+
+    x_btrepobase_init = mocker.patch.object(BtRepoBase, '__init__')
+    x_btrepobase_init.return_value = None
+
+    parser = BtParser('GETDATA', 'HORIZONTAL')
+
+    x_calls = [mock.call(line + '\r\n') for line in X_GETDATA_OUTPUT.splitlines()]
+    parser.parse_files('getdata.txt', csv_buffer_arg)
+    assert x_calls == x_open.return_value.write.mock_calls
+
+
+@pytest.mark.parametrize('x_input,x_output', [
+    (X_GETHISTORY_INPUT, X_GETHISTORY_OUTPUT),
+    (X_GETHISTORY_IMPROPER_INPUT, X_GETHISTORY_IMPROPER_OUTPUT),
+    (X_GETHISTORY_INPUT_WITHOUT_REQUESTOR_TAG, X_GETHISTORY_OUTPUT_WITHOUT_REQUESTOR_TAG)
+])
+def test_parser_bbg_batch_get_history_file(mocker, x_input, x_output, x_open, csv_buffer_arg):
+    mock_repo = mocker.patch('etl.bbg_transport.parser.BtParser.bulk_fmt_repo')
+    mock_rows = []
+    mock_repo.list_by_bulk_format_mnemonic.return_value = mock_rows
+    x_file_stream = mocker.patch('etl.bbg_transport.parser.file_stream')
+    x_file_stream.return_value = x_input.splitlines()
+
+    x_btrepobase_init = mocker.patch.object(BtRepoBase, '__init__')
+    x_btrepobase_init.return_value = None
+
+    parser = BtParser('GETHISTORY', 'VERTICAL')
+
+    x_calls = [mock.call(line + '\r\n') for line in x_output.splitlines()]
+    parser.parse_files('gethistory.txt', csv_buffer_arg)
+    assert x_calls == x_open.return_value.write.mock_calls
+
+
+def test_modify_requestor_tag(csv_buffer_arg):
+    X_BT_PARSER_INSTANCE.modify_requestor_tag(csv_buffer_arg)
+    assert X_OUTPUT_REQUESTOR_TAG == csv_buffer_arg.stream.getvalue()
+
+
+def test_modify_requestor_tag_output_columns(csv_buffer_arg):
+    X_BT_PARSER_INSTANCE.modify_requestor_tag(csv_buffer_arg)
+    assert (3 == csv_buffer_arg.stream.getvalue().split('\n')[0].count(',')) + 1
+
+
+def test_modify_requestor_tag_no_key_requestor_tag(csv_buffer_no_requestor_tag):
+    X_BT_PARSER_INSTANCE.modify_requestor_tag(csv_buffer_no_requestor_tag)
+    assert X_CSV_FILE_WITH_NO_REQUESTOR_TAG_COLUMN == csv_buffer_no_requestor_tag.stream.getvalue()
+
+
+def test_validate_security_column():
+    result = validate_security_column(X_INPUT_DATAFRAME_VALIDATE_SECURITY_COLUMN)
+    assert X_OUTPUT_DATAFRAME_VALIDATE_SECURITY_COLUMN.equals(result)
