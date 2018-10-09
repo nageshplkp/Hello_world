@@ -1,0 +1,586 @@
+import abc
+import gzip
+import logging
+import math
+import os.path
+import json
+import socket
+import sys
+import urllib2
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from shutil import copyfile
+from dateutil.parser import parse
+
+import paramiko
+
+from etl.bbg_transport.config import config_api
+from etl.bbg_transport.dto import RequestItem, RequestOptionItem
+from etl.bbg_transport.parser import BtParser, json2csv
+from etl.bbg_transport.util import BbgConfig, BtRepoBase
+from etl.core.file_util import file_stream
+from etl.core.util import parse_args, struct
+from etl.core.util import uri_get
+from etl.enum.cor_da import BtStatusEnum
+from etl.repo.cor_da import BtConfigRepo
+
+USAGE = ['BBG Transport Agent', ['direction', {'help': 'REQUEST or RESPONSE'}]]
+
+
+class BbgFtp(object):
+    def __init__(self, config=None):
+        logging.getLogger(__name__).setLevel(logging.getLevelName(config_api().get('log_level')))
+        self.config = None
+        self._ftp_client = None
+        self._ftp_transport = None
+        self.config = config if isinstance(config, BbgConfig) else BbgConfig()
+
+    @property
+    def is_local_ftp(self):
+        return self.config.data[BbgConfig.KEY_BBG_FTP_HOST] == BbgConfig.INTERNAL_HOST_FLAG
+
+    @property
+    def ftp_client(self):
+        if self.is_local_ftp:
+            return None
+        if self._ftp_client is None:
+            self._ftp_connect()
+        return self._ftp_client
+
+    def _ftp_connect(self):
+        host = self.config.data[BbgConfig.KEY_BBG_FTP_HOST]
+        port = int(self.config.data[BbgConfig.KEY_BBG_FTP_PORT])
+        uname = self.config.data[BbgConfig.KEY_BBG_FTP_USER]
+        mkey = paramiko.RSAKey.from_private_key_file(self.config.data[BbgConfig.KEY_BBG_FTP_PASSWORD])
+        try:
+            self._ftp_transport = paramiko.Transport(host, port)
+            self._ftp_transport.set_keepalive(2)
+            self._ftp_transport.connect(username=uname, pkey=mkey)
+            self._ftp_client = paramiko.SFTPClient.from_transport(self._ftp_transport)
+        except Exception:
+            host = self.config.data[BbgConfig.KEY_BBG_FTP_HOST_2]
+            self._ftp_transport = paramiko.Transport(host, port)
+            self._ftp_transport.set_keepalive(2)
+            self._ftp_transport.connect(username=uname, pkey=mkey)
+            self._ftp_client = paramiko.SFTPClient.from_transport(self._ftp_transport)
+
+    def is_connected(self):
+        if self._ftp_client is None or self._ftp_transport is None:
+            return False
+        return self._ftp_transport.is_active()
+
+    def __del__(self):
+        self.cleanup()
+
+    def cleanup(self):
+        if self._ftp_client:
+            try:
+                self._ftp_client.close()
+            except Exception:
+                pass
+        if self._ftp_transport:
+            try:
+                self._ftp_transport.close()
+            except Exception:
+                pass
+        self._ftp_client = None
+        self._ftp_transport = None
+
+    def send_request_file(self, source_path):
+        file_name = os.path.basename(source_path)
+        target_path = os.path.join(self.config.data[BbgConfig.KEY_BBG_FTP_OUT_LOC].strip(), file_name)
+        if self.is_local_ftp:
+            copyfile(source_path, target_path)
+        else:
+            if not self.is_connected():
+                self._ftp_connect()
+            with open(source_path) as f:
+                self.ftp_client.putfo(f, target_path)
+
+    def get_response_file(self, source_path):
+        file_name = os.path.basename(source_path)
+        target_path = os.path.join(self.config.data[BbgConfig.KEY_DATA_FILE_IN_LOC].strip(), file_name)
+        if self.is_local_ftp is True:
+            copyfile(source_path, target_path)
+            return os.path.exists(target_path)
+        else:
+            try:
+                if not self.is_connected():
+                    self._ftp_connect()
+                with open(target_path, 'wb') as f:
+                    self.ftp_client.getfo(source_path, f)
+                return True
+            except IOError as e:
+                if e.errno == 2:
+                    try:
+                        if os.path.exists(target_path):
+                            os.remove(target_path)
+                    except IOError:
+                        pass
+                    return False
+                else:
+                    logging.exception("Error encountered: {}".format(e.message))
+                    raise e
+
+
+class BbgAgent(BtRepoBase):
+    __metaclass__ = abc.ABCMeta
+
+    NO_ITEMS_PROCESSED = 100
+    ITEMS_PROCESSED = 0
+
+    def __init__(self, processing_status):
+        super(BbgAgent, self).__init__()
+        logging.getLogger(__name__).setLevel(logging.getLevelName(config_api().get('log_level')))
+        self._processing_status = processing_status
+        self._run_date = None
+        self._bbg_ftp = None
+        self._config = None
+        self._errors = []
+        self._ins_upd_by = 'Python ({})'.format(os.path.basename(__file__))
+
+    @property
+    def config(self):
+        if not self._config:
+            self._config = BbgConfig()
+        return self._config
+
+    @property
+    def run_date(self):
+        if not self._run_date:
+            self._run_date = datetime.now() + timedelta(seconds=-3)
+        return self._run_date
+
+    @property
+    def bbg_ftp(self):
+        if self._bbg_ftp is None:
+            self._bbg_ftp = BbgFtp(self.config)
+        return self._bbg_ftp
+
+    @property
+    def max_items(self):
+        return int(self.config.data[BbgConfig.KEY_MAX_REQUEST_ITEMS])
+
+    @property
+    def bt_env(self):
+        return self.config.data[BbgConfig.KEY_ENVIRONMENT][0:1].upper()
+
+    @property
+    def bbg_location_in(self):
+        return self.config.data[BbgConfig.KEY_BBG_FTP_IN_LOC].strip()
+
+    @property
+    def bt_location_in(self):
+        return self.config.data[BbgConfig.KEY_DATA_FILE_IN_LOC].strip()
+
+    @property
+    def bt_location_out(self):
+        return self.config.data[BbgConfig.KEY_REQ_FILE_OUT_LOC]
+
+    @property
+    def max_retry(self):
+        return int(self.config.data[BbgConfig.KEY_MAX_RETRY])
+
+    @property
+    def processing_status(self):
+        return self._processing_status
+
+    @property
+    def errors(self):
+        return self._errors
+
+    @contextmanager
+    def run(self):
+        self.reset_state()
+        yield self.process_requests_in_status()
+        self.cleanup()
+
+    def reset_state(self):
+        self._run_date = None
+        self._errors = []
+
+    def cleanup(self):
+        if self._bbg_ftp:
+            self.bbg_ftp.cleanup()
+
+    def get_next_request(self):
+        request = self.request_repo.get_next_request_by_status_less_process_date(self.processing_status, self.run_date)
+        if request:
+            request.process_date = datetime.now()
+            self.request_repo.save(request)
+        return request
+
+    def process_requests_in_status(self):
+        rtn = BbgAgent.NO_ITEMS_PROCESSED
+        request = self.get_next_request()
+        while request:
+            try:
+                if request.bbg_interface_code == 'DL':
+                    if self.process_request(request):
+                        rtn = BbgAgent.ITEMS_PROCESSED
+                else:
+                    self.update_request(request=request, status_code=BtStatusEnum.PENDING.value)
+                    file_path = process_sapi_request(request)
+                    self.update_request(request=request, data_file_path=file_path,
+                                        status_code=BtStatusEnum.SUCCESS.value)
+                    rtn = BbgAgent.ITEMS_PROCESSED
+            except Exception as e:
+                msg = "{} [{}]: {}".format(type(e),
+                                           e.__class__.__bases__,
+                                           getattr(e, 'message', '#UNK#'))
+                logging.info("Error while processing RequestId {request.bt_request_id}: {msg}".format(**locals()))
+                self.errors.append("RequestId {}: {}".format(request.bt_request_id, msg))
+                self.update_request(request=request, status_code=BtStatusEnum.BTERROR.value)
+                self.batch_upsert(request_id=request.bt_request_id, batch_seq=0, error_text=msg)
+            request = self.get_next_request()
+        if len(self.errors) > 0:
+            raise RuntimeError(self.errors)
+        return rtn
+
+    def update_request(self, request, status_code=None, retry_count=None, data_file_path=None):
+        if not any([status_code, retry_count, data_file_path]):
+            return
+        request.bt_status_code = status_code
+        if status_code:
+            request.status_date = datetime.now()
+        request.retry_count = retry_count or 0
+        request.data_file_path = data_file_path
+        request.row_update_by = self._ins_upd_by
+        request.row_update_date = datetime.now()
+        self.request_repo.save(request)
+        self._sync_lookback_requests(request)
+
+    def batch_upsert(self,
+                     request_id,
+                     batch_seq,
+                     batch_id=None,
+                     file_path=None,
+                     error_text=None,
+                     bbg_time_started=None,
+                     bbg_time_finished=None):
+        if not any([file_path, error_text, bbg_time_started, bbg_time_finished]):
+            return
+        if batch_id:
+            batch = self.batch_repo.get_by_batch_id(batch_id)
+        else:
+            batch = self.batch_repo.get_by_bt_request_id_file_sequence_no(request_id,
+                                                                          batch_seq) or self.batch_repo.BtRequestBatch()
+        if not batch.bt_request_id:
+            batch.row_insert_by = self._ins_upd_by
+            batch.row_insert_date = datetime.now()
+        batch.bt_request_id = request_id
+        batch.file_sequence_no = batch_seq
+        batch.request_file_path = file_path or batch.request_file_path or '#UND#'
+        if file_path:
+            batch.response_file_path = os.path.join(self.bbg_location_in,
+                                                    '{}.txt'.format(os.path.splitext(os.path.basename(file_path))[0]))
+        elif batch.request_file_path == '#UND#':
+            batch.response_file_path = '#UND#'
+        elif batch.response_file_path:
+            pass
+        else:
+            batch.response_file_path = '#UND#'
+        batch.is_error_response = bool(error_text)
+        batch.error_text = error_text
+        batch.bbg_time_started = bbg_time_started
+        batch.bbg_time_finished = bbg_time_finished
+        batch.row_update_by = self._ins_upd_by
+        batch.row_update_date = datetime.now()
+        self.batch_repo.save(batch)
+
+    @abc.abstractmethod
+    def process_request(self, request):
+        return False
+
+
+class BbgRequestAgent(BbgAgent):
+    def __init__(self):
+        super(BbgRequestAgent, self).__init__(BtStatusEnum.INITIAL.value)
+        logging.getLogger(__name__).setLevel(logging.getLevelName(config_api().get('log_level')))
+        self._request_template = None
+
+    @property
+    def request_template(self):
+        if not self._request_template:
+            path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'bt_request_template.txt')
+            with open(path) as f:
+                self._request_template = f.read()
+        return self._request_template
+
+    def process_request(self, request):
+        if not request.request_object_data:
+            raise RuntimeError('request_object_data cannot be null (RequestID: {})'.format(request.bt_request_id))
+        request_data = RequestItem.from_json(request.request_object_data)
+
+        request_data.request_options = self.process_request_options(request_data.program_code,
+                                                                    request_data.request_options)
+        template = self.request_template.replace(BbgConfig.TEMPLATE_SECTIONS.FIELDS,
+                                                 '\n'.join(request_data.request_fields))
+        file_count = int(math.ceil(float(len(request_data.request_data_items)) / self.max_items))
+        kwargs_request = struct(
+            request=request,
+            status_code=BtStatusEnum.PENDING.value
+        )
+        for i in range(file_count):
+            kwargs_batch = struct(
+                request_id=request.bt_request_id,
+                batch_seq=i
+            )
+            start = i * self.max_items
+            end = start + self.max_items
+            file_name = self.create_req_file_name(request.bt_request_id, i)
+            request_data.request_options.append(RequestOptionItem(BbgConfig.OPTION_KEY_REPLY_FILE,
+                                                                  '{}.txt'.format(os.path.splitext(file_name)[0])))
+            file_data = template.replace(BbgConfig.TEMPLATE_SECTIONS.OPTIONS,
+                                         '\n'.join([o.option_string for o in request_data.request_options]))
+            data_items = request_data.request_data_items[start:end]
+            file_data = file_data.replace(BbgConfig.TEMPLATE_SECTIONS.DATA,
+                                          '\n'.join([d.data_item_string for d in data_items]))
+            file_path = self.create_req_file(file_name, file_data)
+            kwargs_batch['file_path'] = file_path
+            try:
+                self.bbg_ftp.send_request_file(file_path)
+            except (paramiko.SSHException,
+                    paramiko.BadHostKeyException,
+                    paramiko.AuthenticationException,
+                    socket.error,
+                    IOError) as e:
+                rc = request.retry_count + 1
+                kwargs_request['retry_count'] = rc
+                kwargs_request['status_code'] = request.bt_status_code
+                msg = "{} [{}] - {}({}): {}".format(type(e),
+                                                    e.__class__.__bases__,
+                                                    'Retry Count Exceeded ' if rc >= self.max_retry else '',
+                                                    request.retry_count,
+                                                    getattr(e, 'message', '#UNK#'))
+                kwargs_batch['error_text'] = msg
+                if rc >= self.max_retry:
+                    kwargs_request['status_code'] = BtStatusEnum.BTERROR.value
+            self.batch_upsert(**kwargs_batch)
+        self.update_request(**kwargs_request)
+        return True
+
+    def process_request_options(self, program_code, request_options):
+        if not isinstance(request_options, list) or not all(isinstance(i, RequestOptionItem) for i in request_options):
+            request_options = []
+        for o in self.config.get_file_option_config(program_code):
+            if bool(o.is_default_only) and not any([True for i in request_options if i.option_name == o.option_name]):
+                request_options.append(RequestOptionItem(o.option_name, o.option_value))
+            else:
+                [request_options.remove(i) for i in request_options if i.option_name == o.option_name]
+                if not bool(o.is_deleted_option):
+                    request_options.append(RequestOptionItem(o.option_name, o.option_value))
+        return request_options
+
+    def create_req_file(self, file_name, data):
+        file_path = '{}{}'.format(self.bt_location_out, file_name)
+        with open(file_path, 'w') as output:
+            output.write(data)
+        return file_path
+
+    def create_req_file_name(self, request_id, seq):
+        name_template = BbgConfig.REQUEST_FILE_NAME_TEMPLATE
+        file_name = name_template.replace('##YYYYMMDD##', datetime.today().strftime('%Y%m%d'))
+        file_name = file_name.replace('##REQUEST_ID##', str(request_id))
+        file_name = file_name.replace('##SEQ_NO##', str(seq))
+        return file_name.replace('##ENV##', self.bt_env)
+
+
+class BbgResponseAgent(BbgAgent):
+    def __init__(self):
+        super(BbgResponseAgent, self).__init__(BtStatusEnum.PENDING.value)
+        logging.getLogger(__name__).setLevel(logging.getLevelName(config_api().get('log_level')))
+        self._parsers = {}
+
+    @property
+    def parsers(self):
+        return self._parsers
+
+    def process_request(self, request):
+        batches = self.batch_repo.list_by_bt_request_id(request.bt_request_id)
+        if not batches:
+            raise RuntimeError('No batches found for Request (RequestID: {})'.format(request.bt_request_id))
+        count_errors = 0
+        count_complete = 0
+        kwargs_request = struct(
+            request=request,
+            status_code=request.bt_status_code
+        )
+        for batch in batches:
+            logging.info("Processing RequestId {} - Batch {}".format(request.bt_request_id, batch.batch_id))
+            if batch.response_received_date:
+                count_complete += 1
+                if batch.is_error_response:
+                    count_errors += 1
+                continue
+            response = BbgConfig.BBG_RESPONSE_TYPE.NONE
+            zip_file_name = '{}.{}'.format(batch.response_file_path, BbgConfig.ZIP_FILE_EXT)
+            err_file_name = '{}.{}'.format(os.path.splitext(batch.response_file_path)[0], BbgConfig.ERROR_FILE_EXT)
+            batch.error_text = None
+            try:
+                if self.get_response_file(batch.response_file_path):
+                    logging.info("Response File Found")
+                    response = BbgConfig.BBG_RESPONSE_TYPE.VALID
+                elif self.get_response_file(zip_file_name):
+                    logging.info("Response (Zip) File Found")
+                    response = BbgConfig.BBG_RESPONSE_TYPE.VALID
+                    zip_path = os.path.join(self.bt_location_in, zip_file_name)
+                    tgt_path = os.path.join(self.bt_location_in, batch.response_file_path)
+                    with gzip.open(zip_path) as src, open(tgt_path, 'wb') as tgt:
+                        tgt.write(src.read())
+                elif self.get_response_file(err_file_name):
+                    logging.info("Error File Found")
+                    response = BbgConfig.BBG_RESPONSE_TYPE.ERROR
+                    count_errors += 1
+                    err_file = os.path.basename(batch.response_file_path)
+                    err_file = "{}.{}".format(os.path.splitext(err_file)[0], BbgConfig.ERROR_FILE_EXT)
+                    err_file = os.path.join(self.bt_location_in, err_file)
+                    batch.response_file_path = err_file
+                    batch.error_text = '\n'.join(file_stream(err_file))
+            except (paramiko.SSHException,
+                    paramiko.BadHostKeyException,
+                    paramiko.AuthenticationException,
+                    socket.error,
+                    IOError) as e:
+                logging.info("FTP Exception")
+                rc = request.retry_count + 1
+                kwargs_request['retry_count'] = rc
+                kwargs_request['status_code'] = request.bt_status_code
+                msg = "{} [{}] - {}({}): {}".format(type(e),
+                                                    ' | '.join(e.__class__.__bases__),
+                                                    'Retry Count Exceeded ' if rc >= self.max_retry else '',
+                                                    request.retry_count,
+                                                    getattr(e, 'message', '#UNK#'))
+                batch.is_error_response = True
+                batch.error_text = msg
+                if rc >= self.max_retry:
+                    logging.info("Retry exceeded")
+                    kwargs_request['status_code'] = BtStatusEnum.BTERROR.value
+                self.batch_repo.save(batch)
+            if response == BbgConfig.BBG_RESPONSE_TYPE.NONE:
+                continue
+            count_complete += 1
+            batch.is_error_response = not response == BbgConfig.BBG_RESPONSE_TYPE.VALID
+            batch.response_received_date = datetime.now()
+            self.batch_repo.save(batch)
+        if count_errors > 0:
+            kwargs_request['status_code'] = BtStatusEnum.BBGERROR.value
+        elif len(batches) == count_complete:
+            logging.info("All batches complete")
+            kwargs_request['status_code'] = BtStatusEnum.SUCCESS.value
+            data_file_path = os.path.join(self.bt_location_in, self.create_csv_name(request.bt_request_id))
+            kwargs_request['data_file_path'] = data_file_path
+            files = [(i.batch_id, os.path.join(self.bt_location_in, i.response_file_path)) for i in batches]
+            logging.info("Parsing {} to {}".format(files, data_file_path))
+            parser_result = self.get_parser(request).parse_files([i[1] for i in files], data_file_path)
+            for batch in batches:
+                kwargs_batch = struct(
+                    request_id=request.bt_request_id,
+                    batch_seq=batch.file_sequence_no
+                )
+                if parser_result.is_success:
+                    logging.info("Getting BBG Times")
+                    [f] = (i[1] for i in files if i[0] == batch.batch_id)
+                    kwargs_batch['bbg_time_started'] = parser_result.bbg_time_started(f)
+                    kwargs_batch['bbg_time_finished'] = parser_result.bbg_time_finished(f)
+                else:
+                    logging.info("Logging parse errors")
+                    kwargs_request['status_code'] = BtStatusEnum.BBGERROR.value
+                    kwargs_batch['error_text'] = parser_result.error_text
+                logging.info("Update batch {}".format(batch.batch_id))
+                self.batch_upsert(**kwargs_batch)
+        if kwargs_request['status_code'] != request.bt_status_code:
+            logging.info("Update request")
+            self.update_request(**kwargs_request)
+            # Todo: Add callback functionality
+            # if kwargs_request['status_code'] == BtStatusEnum.SUCCESS.value and request.callback_uri:
+            #     try:
+            #         Thread(target=BbgResponseAgent.callback_requestor, args=[request.callback_uri]).start()
+            #     except Exception:
+            #         pass
+        return kwargs_request['status_code'] != request.bt_status_code
+
+    def get_parser(self, request):
+        key = '{}{}'.format(request.bbg_program_code, request.response_format_code)
+        if key not in self.parsers:
+            self.parsers[key] = BtParser(request.bbg_program_code, request.response_format_code)
+        return self.parsers[key]
+
+    @staticmethod
+    def create_csv_name(request_id):
+        return "{}.{}.csv".format(datetime.today().strftime('%Y%m%d'), str(request_id))
+
+    def get_response_file(self, file_location):
+        try:
+            return self.bbg_ftp.get_response_file(file_location)
+        except IOError:
+            return False
+
+    @staticmethod
+    def callback_requestor(uri):
+        urllib2.urlopen(uri)
+
+
+def process_sapi_request(request):
+    payload = json.loads(request.request_object_data)
+    uri = payload2uri(payload)
+    response = uri_get(uri, parse_content_as='text')
+    bt_location_in = BtConfigRepo.instance.get_by_config_code_bbg_interface_code('DATA_FILE_IN_LOC', 'DL').config_value
+    # for local testing:
+    # bt_location_in = r"C:\Data\Development\etl_git\bin\binPython\etl\bbg_transport"
+    # bt_location_in = r'C:\Data\ETL\batch\branches\batch-svn\bin\binPython\etl\bbg_transport'
+    data_file_path = os.path.join(bt_location_in, BbgResponseAgent.create_csv_name(request.bt_request_id))
+    json2csv(response, data_file_path, payload['response_format_code'], payload['request_fields'], payload['program_code'])
+    return data_file_path
+
+
+def payload2uri(payload):
+    path_template = '_id={ids}&_fields={fields}'
+
+    base_uri = get_endpoint(payload['interface_code'])
+    fields = ','.join(payload['request_fields'])
+    ids = []
+
+    for item in payload['request_data_items']:
+        if item['bbg_query']:
+            s = item['bbg_query'].split('|')[0] + " TICKER"
+        elif item['ticker']:
+            s = item['ticker'] + ' ' + item['yellow_key'] + " TICKER"
+        elif item['cusip']:
+            s = item['cusip'] + ' cusip'
+        elif item['isin']:
+            s = item['isin'] + ' isin'
+        else:
+            raise RuntimeError(
+                'Please check request_data_items.  This interface code only takes bbg_query, ticker, cusip, and isin.')
+
+        ids.append(s.replace(' ', '%20'))
+    ids = ','.join(ids)
+    if payload['program_code'] == 'GETHISTORY':
+        periodicity = 'DAILY'
+        for item in payload['request_options']:
+            if item['option_name'] == 'DATERANGE':
+                dates = item['option_value'].split('|')
+            if item['option_name'] == 'PERIODICITY':
+                periodicity = item['option_value']
+        hist_template = '&_startdate={start_date}&_enddate={end_date}'+'&_periodicity='+periodicity
+        start_date = parse(dates[0]).strftime('%Y-%m-%d')
+        end_date = parse(dates[1]).strftime('%Y-%m-%d')
+        return base_uri + path_template.format(**locals()) + hist_template.format(**locals())
+    return base_uri + path_template.format(**locals())
+
+
+def get_endpoint(interface_code):
+    return BtConfigRepo.instance.get_by_config_code_bbg_interface_code('BBG_SAPI1_HOST', interface_code).config_value
+
+
+if __name__ == '__main__':
+    direction = parse_args(*USAGE).direction
+    if direction.upper() == BbgConfig.AGENT_DIRECTION_REQUEST:
+        agent = BbgRequestAgent()
+    elif direction.upper() == BbgConfig.AGENT_DIRECTION_RESPONSE:
+        agent = BbgResponseAgent()
+    else:
+        raise RuntimeError('Unknown direction specified: {}'.format(direction))
+    with agent.run() as x:
+        sys.exit(x)
