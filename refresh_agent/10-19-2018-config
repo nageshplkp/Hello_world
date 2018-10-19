@@ -1,0 +1,38 @@
+from etl.core.base.agent import AgentBase
+from etl.config.base import Config
+from contextlib import contextmanager
+from etl.enum.cor_da.gen.bt_status import BtStatusEnum
+from etl.enum.pim_da.gen.bbg_program import BbgProgramEnum
+
+
+class RefreshAgentConfig(AgentBase):
+    AGENT_DIRECTION_REQUEST = 'REQUEST'
+    AGENT_DIRECTION_POLL = 'POLL'
+    NO_ITEMS_PROCESSED = 100
+    ITEMS_PROCESSED = 0
+
+    def __init__(self):
+        super(RefreshAgentConfig, self).__init__(app_code='DATS_BATCH')
+        self.getdata = BbgProgramEnum.GETDATA.value
+        self.gethistory = BbgProgramEnum.GETHISTORY.value
+
+        self.success = BtStatusEnum.SUCCESS.value
+        self.pending = BtStatusEnum.PENDING.value
+        self.initial = BtStatusEnum.INITIAL.value
+        self.bterror = BtStatusEnum.BTERROR.value
+        self.bbgeeror = BtStatusEnum.BBGERROR.value
+
+    @property
+    def get_default_headers(self):
+        return {
+            'PROGRAMFLAG': self.config.programflag,
+            'USERNUMBER': self.config.usernumber,
+            'FIRMNAME': self.config.firmname,
+            'COMPRESS': self.config.compress}
+
+    def validate(self, *args, **kwargs):
+        pass
+
+    @contextmanager
+    def run(self, *args, **kwargs):
+        pass
