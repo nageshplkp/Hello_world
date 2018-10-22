@@ -1,0 +1,48 @@
+from etl.core.base.agent import AgentBase
+from contextlib import contextmanager
+from etl.enum.cor_da.gen.bt_status import BtStatusEnum
+from etl.enum.pim_da.gen.bbg_program import BbgProgramEnum
+
+
+class RefreshAgentConfig(AgentBase):
+    AGENT_DIRECTION_REQUEST = 'REQUEST'
+    AGENT_DIRECTION_POLL = 'POLL'
+    NO_ITEMS_PROCESSED = 100
+    ITEMS_PROCESSED = 0
+
+    def __init__(self):
+        super(RefreshAgentConfig, self).__init__(app_code='DATS_REFRESH')
+        self.getdata = BbgProgramEnum.GETDATA.value
+        self.gethistory = BbgProgramEnum.GETHISTORY.value
+        self.success = BtStatusEnum.SUCCESS.value
+        self.pending = BtStatusEnum.PENDING.value
+        self.initial = BtStatusEnum.INITIAL.value
+        self.bterror = BtStatusEnum.BTERROR.value
+        self.bbgerror = BtStatusEnum.BBGERROR.value
+
+    @property
+    def get_default_headers(self):
+        return {
+            'PROGRAMFLAG': self.config.programflag,
+            'USERNUMBER': self.config.usernumber,
+            'FIRMNAME': self.config.firmname,
+            'COMPRESS': self.config.compress}
+
+    @property
+    def get_bt_description(self):
+        return self.config.bt_description
+
+    @property
+    def get_req_code(self):
+        return self.config.requestor_code
+
+    @property
+    def get_file_format(self):
+        return self.config.file_format
+
+    def validate(self, *args, **kwargs):
+        pass
+
+    @contextmanager
+    def run(self, *args, **kwargs):
+        pass
