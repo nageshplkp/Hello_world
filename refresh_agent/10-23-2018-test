@@ -1,0 +1,146 @@
+import arrow
+import mock
+import numpy as np
+import pandas as pd
+import pytest
+from mock import patch
+
+from dats.bbg.agent_refresh import RequestAgent, ResponseAgent, RefreshAgentConfig
+from etl.core.util import struct
+
+TEST_DICT = {'TesT': 'Test'}
+REQ_1 = [struct(bt_request_id=123),
+         struct(bt_request_id=124),
+         struct(bt_request_id=125),
+         struct(bt_request_id=126)]
+
+REQ_2 = [struct(bt_request_id=123),
+         struct(bt_request_id=123),
+         struct(bt_request_id=123),
+         struct(bt_request_id=123)]
+
+
+@pytest.fixture
+def x_refreshagentconfig():
+    with patch('dats.bbg.agent_refresh' + '.RefreshAgentConfig') as x:
+        yield x
+
+
+def test_request_get_request_exception(mocker, x_refreshagentconfig):
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesBbgRepo')
+    x_repo.side_effect = Exception
+    with pytest.raises(Exception):
+        RequestAgent().get_request()
+
+
+def test_get_header_options_list_single_header_option(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict({'A': [123], 'header_options_list': ['Test=Test']})
+    expected = {'Test': 'Test'}
+    assert RequestAgent._get_header_options_list(df) == expected
+
+
+def test_get_header_options_list_multiple_header_option(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict({'A': [123], 'header_options_list': ['Test=Test, Test2=Test2']})
+    expected = {'Test': 'Test', 'Test2': 'Test2'}
+    assert RequestAgent._get_header_options_list(df) == expected
+
+
+def test_get_request_fields_with_unique_mnemonics(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict({'A': [1, 2, 3], 'mnemonic': ['Test', 'Test1', 'TEST2']})
+    assert len(RequestAgent()._get_request_fields(df)) == 3
+
+
+def test_get_request_fields_with_non_unique_mnemonics(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict({'A': [1, 2, 3], 'mnemonic': ['Test', 'Test1', 'Test1']})
+    assert len(RequestAgent()._get_request_fields(df)) == 2
+
+
+def test_get_headers(mocker, x_refreshagentconfig):
+    data_end_date_key = arrow.now().format('YYYYMMDD')
+    expected = {'DATERANGE': '23|' + data_end_date_key, 'PROGRAMNAME': 'GETHISTORY'}
+    mocker.patch.object(RefreshAgentConfig, 'get_default_headers', new_callable=mock.PropertyMock).return_value = {}
+    df = pd.DataFrame.from_dict({'data_start_date_key': [123], 'data_end_date_key': '211',
+                                 'bbg_program_code': 'GETHISTORY', 'header_options_list': None})
+    assert (RequestAgent()._get_headers(df)) == expected
+
+
+def test_get_batch_with_same_values(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict(
+        {'bbg_query': ['Test1', 'Test2'], 'request_hash': [122, 122], 'data_start_date_key': ['20181023', '20181023']})
+    assert len(RequestAgent()._get_batch(df)) == 1
+
+
+def test_get_batch_with_diff_values(x_refreshagentconfig):
+    df = pd.DataFrame.from_dict(
+        {'bbg_query': ['Test1', 'Test2'], 'request_hash': [122, 122], 'data_start_date_key': ['20181023', '20181024']})
+    assert len(RequestAgent()._get_batch(df)) == 2
+
+
+def test_df_len_check_with_row_greater_than_ten_thousand(x_refreshagentconfig):
+    df = pd.DataFrame(np.random.randint(0, 100, size=(10002, 2)), columns=['request_hash', 'bbg_program_code'])
+    assert len(RequestAgent()._df_len_check(df)) == 2
+
+
+def test_df_len_check_with_row_less_than_ten_thousand(x_refreshagentconfig):
+    df = pd.DataFrame(np.random.randint(0, 100, size=(4888, 2)), columns=['request_hash', 'bbg_program_code'])
+    assert len(RequestAgent()._df_len_check(df)) == 1
+
+
+def test_db_obj_to_data_frame(x_refreshagentconfig):
+    exp_df = pd.DataFrame({'Test1': ['tst1', 'tst2', 'tst3'], 'Test2': ['test1', 'test2', 'test3']})
+    db_obj = [struct(Test1='tst1', Test2='test1'),
+              struct(Test1='tst2', Test2='test2'),
+              struct(Test1='tst3', Test2='test3'),
+              ]
+    assert (RequestAgent.db_obj_to_data_frame(db_obj) == exp_df).all().all()
+
+
+def test_get_data_start_date_keys_raise_exception(mocker, x_refreshagentconfig):
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesRepo')
+    x_repo.side_effect = Exception
+    df = pd.DataFrame.from_dict(
+        {'bbg_query': ['Test1', 'Test2'], 'dats_id': [122, 122], 'data_start_date_key': ['20181023', '20181024']})
+    with pytest.raises(Exception):
+        RequestAgent().get_data_start_date_keys(df)
+
+
+def test_get_data_start_date_keys(mocker, x_refreshagentconfig):
+    rec = struct(dats_id=123, data_start_date_key='20181023', dats_code='TEST')
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesRepo')
+    x_repo.return_value.instance.get_by_dats_id.return_value = rec
+    df = pd.DataFrame({'dats_id': [123], 'bbg_query': ['Test1']})
+    exp_df = pd.DataFrame.from_dict(
+        {'bbg_query': ['Test1'], 'data_start_date_key': ['20181023'],
+         'dats_code': ['TEST'], 'dats_id': [123]})
+    assert (
+        RequestAgent().get_data_start_date_keys(df).sort_index().sort_index(axis=1) == exp_df.sort_index().sort_index(
+            axis=1)).all().all()
+
+
+def test_update_request(mocker, x_refreshagentconfig):
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesBbgRepo')
+    x_repo.side_effect = Exception
+    with pytest.raises(Exception):
+        RequestAgent().update_request(2123, 123)
+
+
+def test_get_request_response_raise_error(mocker):
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesBbgRepo')
+    x_repo.side_effect = Exception
+    with pytest.raises(Exception):
+        ResponseAgent().get_request()
+
+
+@pytest.mark.parametrize("test_input,expected", [
+    (REQ_1, 4),
+    (REQ_2, 1),
+])
+def test_get_unique_requests_with_diff_request_ids(test_input, expected, x_refreshagentconfig):
+    assert len(ResponseAgent().get_unique_requests(test_input)) == expected
+
+
+def response_update_request(mocker, x_refreshagentconfig):
+    x_repo = mocker.patch('dats.bbg.agent_refresh' + '.DatsSeriesBbgRepo')
+    x_repo.side_effect = Exception
+    with pytest.raises(Exception):
+        ResponseAgent().update_request(2123)
