@@ -1,0 +1,106 @@
+from etl.repo.fnd_cfdw import EtlFileRepo
+import os
+import pandas as pd
+from etl.repo.pim_da.dats_series import DatsSeriesRepo
+from etl.repo.pim_da.stgp_dats_series_value import StgpDatsSeriesValueRepo
+import logging
+from etl.core.base.agent import AgentBase
+
+
+class LoadAgent(AgentBase):
+    AGENT_DIRECTION_REQUEST = 'REQUEST'
+    AGENT_DIRECTION_POLL = 'POLL'
+    NO_ITEMS_PROCESSED = 100
+    ITEMS_PROCESSED = 0
+
+    def __init__(self):
+        super(LoadAgent, self).__init__(app_code=None)
+        self._stgp_dats_series_value_repo = None
+        self._etl_file_repo = None
+        self._dats_series_repo = None
+
+    @property
+    def _dats_series_repo_(self):
+        if self._dats_series_repo is None:
+            self._dats_series_repo = DatsSeriesRepo()
+        return self._dats_series_repo
+
+    @property
+    def _etl_file_repo_(self):
+        if self._etl_file_repo is None:
+            self._etl_file_repo = EtlFileRepo()
+        return self._etl_file_repo
+
+    @property
+    def _stgp_dats_series_value_repo_(self):
+        if self._stgp_dats_series_value_repo is None:
+            self._stgp_dats_series_value_repo = StgpDatsSeriesValueRepo()
+        return self._stgp_dats_series_value_repo
+
+    def validate(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get_files():
+        try:
+            repo = EtlFileRepo()
+            model = repo.model
+            data = repo.query.filter(model.file_source == 'DATS_BBG_IN',
+                                     model.is_etl_done == 0,
+                                     model.is_ftp_done == 1)
+            return data
+        except Exception as ex:
+            logging.exception(str(ex))
+            raise
+
+    # @staticmethod
+    # def parse_csv(csv_file):
+    #     list_of_securities = []
+    #     df = pd.read_csv(csv_file)
+    #     for index, row in df.iterrows():
+    #         list_of_securities.append(row['REQUESTOR_TAG'])
+    #     return list_of_securities
+
+    @staticmethod
+    def get_rows(csv_file):
+        df = pd.read_csv(csv_file)
+        return [row for index, row in df.iterrows()]
+
+    @staticmethod
+    def get_csv(obj):
+        csv_file = os.path.join(obj.local_file_name, obj.local_file_folder)
+        return csv_file
+
+    @staticmethod
+    def get_series_att(dats_code):
+        try:
+            repo = DatsSeriesRepo()
+            model = repo.model
+            data = repo.query.filter(model.dats_code == dats_code).first()
+            return data
+        except Exception as ex:
+            logging.exception(str(ex))
+            raise
+
+    def update_value(self, csv_row, dats_series_data, obj):
+        try:
+            self._stgp_dats_series_value_repo_.instance.model(etl_file_id=obj.etl_file_id,
+                                                              etl_audit_job_id=dats_series_data.etl_audit_job_id,
+                                                              etl_source_code=dats_series_data.dats_series_data,
+                                                              source_provider_code=dats_series_data.source_provider_code,
+                                                              dats_code=dats_series_data.dats_code,
+                                                              asof_date=csv_row['asof_date'],
+                                                              dats_value=csv_row['value'])
+            self._stgp_dats_series_value_repo_.save()
+        except Exception as ex:
+            logging.exception(str(ex))
+            raise
+
+    def run(self):
+        files_ = self.get_files()
+        for file_ in files_:
+            csv_file = self.get_csv(file_)
+            rows = self.get_rows(csv_file)
+            for row in rows:
+                data = self.get_series_att(row['REQUESTOR_TAG'])
+                self.update_value(row, data, file_)
