@@ -1,0 +1,86 @@
+from dats.bbg.agent_load import LoadAgent
+from etl.core.util import struct
+import pytest
+import pandas as pd
+
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+import codecs
+
+VALS = [1, 2]
+OBJECT = struct(local_file_name='test.csv', local_file_folder='/test/folder')
+X_INPUT_STRG_TEMP = '''"REQUESTOR_TAG","col2","col3"
+"##test1##","3","foo"
+"##test2##","5","bar"
+"##test3##","7","baz"'''
+
+DF_SM = pd.DataFrame({'REQUESTOR_TAG': ['ABC', 'ABC', 'ACD', 'ACG'], 'ROW_STATUS': [0, 0, 0, 0]})
+DF_UNIQ = pd.DataFrame({'REQUESTOR_TAG': ['ABC', 'ABD', 'ACD', 'ACG'], 'ROW_STATUS': [0, 0, 0, 0]})
+
+
+@pytest.fixture(name='csv_buffer_arg')
+def csv_buffer_with_input_string_fixture():
+    buffer_ = StringIO(X_INPUT_STRG_TEMP)
+    return codecs.getwriter("utf8")(buffer_)
+
+
+def test_get_csv_loc(x_config_base):
+    expected = '/test/folder\\test.csv'
+    actual = LoadAgent.get_csv_loc(OBJECT)
+    assert actual == expected
+
+
+def test_get_rows(csv_buffer_arg, x_config_base):
+    actual = LoadAgent().get_rows(csv_buffer_arg)
+    assert len(actual) == 3
+
+
+def test_get_series_att(mocker, x_config_base):
+    x_repo = mocker.patch('dats.bbg.agent_load' + '.DatsSeriesRepo')
+    x_repo().query.filter.return_value.first.return_value = ['test']
+    actual = LoadAgent.get_series_att(123)
+    assert len(actual) == 1
+
+
+def test_get_series_att_raise_error(mocker, x_config_base):
+    mocker.patch('dats.bbg.agent_load' + '.DatsSeriesRepo').side_effect = RuntimeError
+    with pytest.raises(Exception):
+        LoadAgent.get_series_att(123)
+
+
+def test_get_files_raise_error(mocker, x_config_base):
+    mocker.patch('dats.bbg.agent_load' + '.EtlFileRepo').side_effect = RuntimeError
+    with pytest.raises(Exception):
+        LoadAgent.get_files()
+
+
+def test_get_files(mocker, x_config_base):
+    x_repo = mocker.patch('dats.bbg.agent_load' + '.EtlFileRepo')
+    x_repo().query.filter.return_value.all.return_value = ['test']
+    actual = LoadAgent.get_files()
+    assert len(actual) == 1
+
+
+@pytest.mark.parametrize('df, expected_output', [(DF_SM, 3),
+                                                 (DF_UNIQ, 4)])
+def test_get_unique_rows(df, expected_output, x_config_base):
+    df = LoadAgent._get_unique_rows(df)
+    assert len(df) == expected_output
+
+
+@pytest.mark.parametrize("val", [
+    VALS[0],
+    VALS[1]
+])
+def test_update_value_stgp_raise_error(mocker, val, x_config_base):
+    x_repo_stgp = mocker.patch('dats.bbg.agent_load' + '.StgpDatsSeriesValueRepo')
+    x_repo_ups_value = mocker.patch('dats.bbg.agent_load' + '.UpsDatsSeriesValueRepo')
+    x_dats_series_repo = mocker.patch('dats.bbg.agent_load' + '.DatsSeriesRepo')
+    if val == 1:
+        x_repo_stgp.side_effect = RuntimeError
+    elif val == 2:
+        x_repo_ups_value.side_effect = RuntimeError
+    with pytest.raises(Exception):
+        LoadAgent().insert_value(csv_row=struct(), dats_series=x_dats_series_repo, obj=struct())
