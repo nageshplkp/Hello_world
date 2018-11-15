@@ -1,0 +1,26 @@
+from __future__ import unicode_literals
+from ..admin_view_model_base import *
+from ...models.create_request import CreateRequest as Model, modelFieldHelper
+
+
+class CreateRequestAdminViewModel(AdminClientSideFormViewModelBase):
+    fields = None
+    fieldsets = (
+        (None, {
+            'classes': ('suit-tab', 'suit-tab-general'),
+            'fields': [o for o in modelFieldHelper.form_fields if o not in modelFieldHelper.readonly_fields]
+        }),
+        ('HTTP Status', {
+            'classes': ('suit-tab', 'suit-tab-http_status'),
+            'fields': Model.http_status_fields
+        }),
+    )
+    # raw_id_fields = modelFieldHelper.raw_id_fields
+    readonly_fields = modelFieldHelper.readonly_fields + Model.http_status_fields
+    suit_form_tabs = (('general', 'General'), ('http_status', 'HTTP Status'))
+
+    from ..inlines.create_request import InlineHelper
+    inlines = InlineHelper().get_inlines()
+
+
+admin.site.register(Model, CreateRequestAdminViewModel)
