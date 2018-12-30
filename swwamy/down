@@ -1,0 +1,154 @@
+import argparse
+import copy
+import os
+import re
+import sys
+from contextlib import contextmanager
+
+from da_common import da_ftp_wrapper
+from etl.bbg_transport.interface.data_license.dl_interface import BtParser
+from etl.core.base.agent import AgentBase
+from etl.core.da_log import logger as log
+from etl.core.util import parse_args
+from etl.enum.cor_da.gen.bbg_program import BbgProgramEnum
+from etl.enum.cor_da.gen.bt_format import BtFormatEnum
+from etl.repo.fnd_cfdw.etl_file import EtlFileRepo
+
+USAGE = [
+    'ETL DATS Download Agent ',
+    [['-c', '--file-source-code', '--file_source_code'],
+     {'help': 'Etl source code for etl source', 'required': True}],
+    [['-f', '--horizontal'],
+     {'help': 'Etl output file format(HORIZONTAL if specified),',
+      'action': 'store_true', 'default': False}],
+    [['-p', '--protocol'],
+     {'help': 'Specify which Protocol to use', 'default': 'SFTP',
+      'choices': ['SFTP', 'FTP']}],
+]
+
+
+class DownloadAgentRepo(object):
+    def __init__(self):
+        self._etl_file_repo = None
+
+    @property
+    def etl_file_repo(self):
+        if not self._etl_file_repo:
+            self._etl_file_repo = EtlFileRepo()
+        return self._etl_file_repo
+
+
+class DownloadAgent(AgentBase):
+    def __init__(self, args=None):
+        super(DownloadAgent, self).__init__(app_code='DATS_DOWNLOAD_AGENT')
+        self.repo = DownloadAgentRepo()
+        self.bt_parser = BtParser
+        self.args = copy.deepcopy(
+            vars(args) if args is not None else dict())
+        self.bbg_program_code = BbgProgramEnum.GETDATA.value
+        self.format = BtFormatEnum.VERTICAL.value if not self.args.get('horizontal') else BtFormatEnum.HORIZONTAL.value
+        self.file_source = (self.args.get('file_source_code')).strip()
+
+    def validate(self, *args, **kwargs):
+        pass
+
+    def get_files(self):
+        """
+        Fetch files to be FTP done from ETL_FILE table.
+        :return: List of DB objects.
+        """
+        try:
+            log.info('Fetching file meta data from ETL_FILE table.')
+            return self.repo.etl_file_repo.instance.list_file_source_is_ftp_done_is_etl_done(
+                file_source=self.file_source,
+                is_ftp_done=0,
+                is_etl_done=0)
+        except Exception as ex:
+            log.exception('Error while fetching data from ETL_FILE Table with error message:' + str(ex))
+            raise
+
+    def _get_args(self, file_list, host, host_path, local_path, port, username):
+        args = argparse.Namespace(anonymous=False, diff=False, download_files=True, exclude_equal=True,
+                                  exclude_pattern=None,
+                                  file_list=file_list, host=host,
+                                  host_path=host_path,
+                                  identity_file=None, list_files=False, local_path=local_path,
+                                  max_retry=10,
+                                  max_tries=3, output_list=None, password=None, pattern=None, pk_password=None,
+                                  port=port,
+                                  protocol=(self.args.get('protocol')).strip(), reverse_order=None, skip_confirm=False,
+                                  skip_prefetch=False,
+                                  sock_timeout=None, sort_by=None, upload_files=False, username=username)
+        return args
+
+    def download_file(self, obj, file_list):
+
+        da_ftp_wrapper.get_arguments = self._get_args(file_list=file_list, host=obj.ftp_server_name,
+                                                      host_path=obj.ftp_file_folder, local_path=obj.local_file_folder,
+                                                      port=obj.port_no, username=obj.ftp_user_name)
+        log.info(' Downloading file from BBG ... ')
+        da_ftp_wrapper.execute_ftp_cmd()
+        return True
+
+    def is_get_data(self, file_path):
+        """
+        Checks whether the response file is a GETDATA.
+        :param file_path: str
+        :return: Bool
+        """
+        result = True
+        with open(file_path) as f:
+            if not re.search(self.bbg_program_code, f.read(), re.IGNORECASE):
+                result = False
+        return result
+
+    def parse_file(self, file_path):
+        """
+        Converts .txt file into CSV file.
+        :param file_path: str
+        :return: str
+        """
+        tgt_file = file_path.replace('.txt', '.csv')
+        if not self.is_get_data(file_path):
+            self.bbg_program_code = BbgProgramEnum.GETHISTORY.value
+        self.bt_parser(self.bbg_program_code, self.format).parse_files(file_path, tgt_file)
+        return tgt_file
+
+    def update_etl_file(self, csv_list):
+        try:
+            for csv_file in csv_list:
+                local_file_name = (os.path.basename(csv_file)).replace('.csv', '.txt')
+                row = self.repo.etl_file_repo.get_by_file_source_local_file_name(file_source=self.file_source,
+                                                                                 local_file_name=local_file_name)
+                infoi
+                row.ftp_is_done = 1
+                row.local_file_name = csv_file
+            self.repo.etl_file_repo.save()
+        except Exception as ex:
+            log.exception('Error while updating data to ETL_FILE Table with error message:' + str(ex))
+            raise
+
+    def process_files(self, objs):
+        file_list = [obj.local_file_name for obj in objs]
+        if self.download_file(objs[0], file_list):
+            csv_list = []
+            for bbg_file in file_list:
+                csv_file = self.parse_file(os.path.join(objs[0].local_file_folder, bbg_file))
+                csv_list.append(csv_file)
+            self.update_etl_file(csv_list)
+        return True
+
+    @contextmanager
+    def run(self):
+        rows = self.get_files()
+        if rows:
+            if self.process_files(rows):
+                self.ret_code = self.result_code.SUCCESS_ITEM_PROCESSED.value
+        yield self.ret_code
+
+
+if __name__ == '__main__':
+    options = parse_args(*USAGE)
+    with DownloadAgent(args=options).run() as x:
+        log.info('Agent  execution complete.')
+        sys.exit(x)
