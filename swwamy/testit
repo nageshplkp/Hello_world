@@ -16,10 +16,13 @@ from etl.repo.pim_da.dats_series import DatsSeriesRepo
 from etl.repo.pim_da.stgp_dats_series_value import StgpDatsSeriesValueRepo
 from etl.repo.pim_da.ups_dats_series_value import UpsDatsSeriesValueRepo
 
-#------------------ newly added --------------
+# ------------------ newly added --------------
 from sqlalchemy.orm import scoped_session, sessionmaker
+
 DBSession = scoped_session(sessionmaker())
-#------------------ newly added ---------------
+
+
+# ------------------ newly added ---------------
 
 
 class LoaderAgent(AgentBase):
@@ -113,8 +116,8 @@ class LoaderAgent(AgentBase):
             log.info('Fetching data from the DATS_SERIES Table')
             repo = DatsSeriesRepo()
             model = repo.model
-            #__in  list filter
-            
+            # __in  list filter
+
             # repo.query.filter(model.dats_code.in_(dats_code)).first()
             repo.query.filter(model.dats_code.in_(dats_code)).all()
             # data = repo.query.filter(model.dats_code == dats_code).first()
@@ -131,30 +134,21 @@ class LoaderAgent(AgentBase):
             log.info('Update or Insert  STGP_DATS_SERIES_VALUE table..')
             # we are creating bulk objects, csv_row is a list
             # bulk insertion mapping here
+            mappings = []
             for row in csv_row:
-                DBSession.bulk_insert_mappings(
-                    self.stgp_dats_series_value_repo.instance.model(
-                            etl_file_id=obj.etl_file_id,                                                       etl_audit_job_id=self.audit_id,
-                            etl_source_code=dats_series.dats_series_data,
-                            source_provider_code=dats_series.source_provider_code,
-                            dats_code=dats_series.dats_code,
-                            asof_date=datetime.strptime(row['ASOF_DATE'],"%m/%d/%Y"),
-                            dats_value=row['VALUE']
-                    ))
-
-            DBSession.commit()
+                insert_data = {}
+                insert_data['etl_file_id'] = obj.etl_file_id
+                insert_data['etl_audit_job_id'] = self.audit_id
+                insert_data['etl_source_code'] = dats_series.dats_series_data
+                insert_data['source_provider_code'] = dats_series.source_provider_code
+                insert_data['dats_code'] = dats_series.dats_code
+                insert_data['asof_date'] = datetime.strptime(row['ASOF_DATE'], "%m/%d/%Y")
+                insert_data['dats_value'] = row['VALUE']
+                mappings.append(insert_data)
+            self.db.session.bulk_insert_mappings(self.stgp_dats_series_value_repo.instance.model, mappings)
+            self.db.session.commit()
             self.stgp_dats_series_value_repo.save()
 
-            # self.stgp_dats_series_value_repo.instance.model(etl_file_id=obj.etl_file_id,
-            #                                                   etl_audit_job_id=self.audit_id,
-            #                                                   etl_source_code=dats_series.dats_series_data,
-            #                                                   source_provider_code=dats_series.source_provider_code,
-            #                                                   dats_code=dats_series.dats_code,
-            #                                                   asof_date=datetime.strptime(csv_row['ASOF_DATE'],
-            #                                                                               "%m/%d/%Y"),
-            #                                                   dats_value=csv_row['VALUE'])
-
-            # self.stgp_dats_series_value_repo.save()
         except Exception as ex:
             logging.exception(str(ex))
             raise
@@ -162,19 +156,21 @@ class LoaderAgent(AgentBase):
     def _insert_ups_dats_series_value(self, csv_row, dats_series):
         try:
             log.info('Update or Insert  UPS_DATS_SERIES_VALUE table..')
-            self.ups_dats_series_value_repo.instance.model(etl_audit_job_id=dats_series.etl_audit_job_id,
-                                                             dats_id=dats_series.dats_id,
-                                                             asof_date_key=int(
-                                                                 datetime.strptime(csv_row['ASOF_DATE'],
-                                                                                   "%m/%d/%Y").strftime("%Y%m%d")),
-                                                             asof_time_id=0,
-                                                             dats_value_str=str(csv_row['VALUE']),
-                                                             dats_value_str_hash=text(
-                                                                 "ORA_HASH({val})".format(val=str(csv_row['VALUE']))),
-                                                             dats_value_num=int(
-                                                                 csv_row['VALUE']),
-                                                             row_is_active=0
-                                                             )
+
+            mappings = []
+            for row in csv_row:
+                insert_data = {}
+                insert_data['etl_audit_job_id'] = dats_series.etl_audit_job_id
+                insert_data['dats_id'] = dats_series.dats_id
+                insert_data['asof_date_key'] = int(datetime.strptime(csv_row['ASOF_DATE'],"%m/%d/%Y").strftime("%Y%m%d"))
+                insert_data['asof_time_id'] = 0
+                insert_data['dats_value_str'] = str(csv_row['VALUE'])
+                insert_data['dats_value_str_hash'] = text("ORA_HASH({val})".format(val=str(csv_row['VALUE'])))
+                insert_data['dats_value_num'] = int(csv_row['VALUE'])
+                insert_data['row_is_active'] = 0
+                mappings.append(insert_data)
+            self.db.session.bulk_insert_mappings(self.ups_dats_series_value_repo.instance.model, mappings)
+            self.db.session.commit()
             self.ups_dats_series_value_repo.save()
         except Exception as ex:
             logging.exception(str(ex))
@@ -204,8 +200,6 @@ class LoaderAgent(AgentBase):
         da_sp_wrapper.main()
         return
 
-
-
     @contextmanager
     def run(self):
         file_objs = self.get_files()
@@ -231,8 +225,6 @@ class LoaderAgent(AgentBase):
             self._call_sp_etl_ups_merge()
             self.ret_code = self.ITEMS_PROCESSED
         yield self.ret_code
-
-
 
 
 if _name_ == '_main_':
