@@ -1,0 +1,19 @@
+    def update_etl_file(self, csv_list):
+        try:
+            mappings = {}
+            for csv_file in csv_list:
+                local_file_name = (os.path.basename(csv_file)).replace('.csv', '.txt')
+                row = self.repo.etl_file_repo.get_by_file_source_local_file_name(file_source=self.file_source,
+                                                                                 local_file_name=local_file_name)
+
+                # row.ftp_is_done = 1
+                # row.local_file_name = csv_file
+                mappings[row.ftp_is_done] = 1
+                mappings[row.local_file_name] = csv_file
+            self.db.session.bulk_update_mappings(self.model, mappings) # we have to send database table name instead of self.model
+            self.db.session.flush()
+            self.db.session.commit()
+            self.repo.etl_file_repo.save()
+        except Exception as ex:
+            log.exception('Error while updating data to ETL_FILE Table with error message:' + str(ex))
+            raise
