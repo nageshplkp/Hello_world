@@ -1,0 +1,496 @@
+import cx_Oracle
+from datetime import datetime
+from django.contrib import admin
+from django.contrib.admin.utils import unquote
+from django.db import transaction
+from django.utils.decorators import method_decorator
+from django.utils.safestring import mark_safe
+from django.views.decorators.csrf import csrf_protect
+from django.core.urlresolvers import reverse
+
+from ...helpers import *
+from ...helpers.code_to_html import *
+from ..models import *
+from . import filters
+
+
+csrf_protect_m = method_decorator(csrf_protect)
+TO_FIELD_VAR = '_to_field'
+
+
+def has_permission(request, app_label, model_name, perm):
+    """
+    Returns True if the given request has the specified permission given
+    Django model instance, the default implementation doesn't examine the
+    `obj` parameter.
+    """
+    codename = '%s_%s' % (perm, model_name)
+    return request.user.has_perm("%s.%s" % (app_label, codename))
+
+
+################################################################################
+# Base classes
+################################################################################
+class ModelAdminBase(admin.ModelAdmin):
+    def __init__(self, model, admin_site):
+        super(ModelAdminBase, self).__init__(model, admin_site)
+        override_extend(self)
+        if hasattr(self, 'on_override'):
+            self.on_override()
+
+    def has_change_permission(self, request, obj=None):
+        return self.has_change_permission_base(request, obj) or self.has_read_permission(request, obj)
+
+    def has_change_permission_base(self, request, obj=None):
+        return super(ModelAdminBase, self).has_change_permission(request, obj)
+
+    def has_read_permission(self, request, obj=None):
+        opts = self.opts
+        return has_permission(request, opts.app_label, opts.model_name, 'read')
+
+    class Media:
+        css = {
+            'all': ('core/css/styles.css',)
+        }
+        js = (
+            'js/require.js',
+            'core/js/scripts.js',
+        )
+
+
+class AdminViewModelBase(ModelAdminBase):
+    enable_add = True
+    enable_change = True
+    enable_delete = False
+
+    # list_display_get_value_func = {'field_name': 'func_name_on_vm_to_get_value'}
+    list_display_get_value_func = {}
+
+    # inlines_to_load = [('inline_class_name', 'inline_file_name'), ... }
+    inlines_to_load = []
+
+    # inlines_to_load_overrides = {
+    #     'inline_class_name': {'index': new_index, 'exclude': True}
+    # }
+    inlines_to_load_overrides = {}
+
+
+    # empty_value_display = ''
+    # exclude = None
+    # fieldsets = None
+    # filter_horizontal = ()
+    # filter_vertical = ()
+    # formfield_overrides = {}
+    # ordering = None
+    # prepopulated_fields = {}
+    # radio_fields = {}
+    # raw_id_fields = ()
+    # readonly_fields = []
+    # short_description = ''
+    # show_full_result_count = True
+    view_on_site = False
+
+    # date_hierarchy = None
+    list_max_show_all = 100
+    list_per_page = 20
+    list_select_related = True
+    preserve_filters = True
+    # save_as = False
+    # save_as_continue = True
+    # save_on_top = False
+    # search_fields = ()
+
+    # Custom templates (designed to be over-ridden in subclasses)
+    # add_form_template = None
+    # change_form_template = None
+    # change_list_template = "change_list.html"
+    # delete_confirmation_template = None
+    # delete_selected_confirmation_template = None
+    # object_history_template = None
+    # popup_response_template = None
+
+    # Actions
+    # actions = []
+    # actions_on_top = True
+    # actions_on_bottom = False
+    # actions_selection_counter = True
+
+    def __init__(self, model, admin_site):
+        super(AdminViewModelBase, self).__init__(model, admin_site)
+
+        # self.inlines = self.get_inlines() if self.enable_add or self.enable_change else []
+        self.inlines = self.get_inlines()
+        self.user_list_display = {}
+        self.user_search_display = {}
+
+        if not self.list_filter.__contains__(filters.ColumnsListFilter):
+            list_filter = list(self.list_filter)
+            list_filter.append(filters.ColumnsListFilter)
+            self.list_filter = list_filter
+
+        if not self.list_filter.__contains__(filters.SearchColumnsListFilter):
+            list_filter = list(self.list_filter)
+            list_filter.append(filters.SearchColumnsListFilter)
+            self.list_filter = list_filter
+
+        self.__list_display_codes()
+
+    def __apply_columns_filter(self, request):
+        if request.GET.has_key(filters.ColumnsListFilter.parameter_name_in)\
+                or request.GET.has_key(filters.ColumnsListFilter.parameter_name):
+
+            list_filters = self.get_list_filter(request)
+
+            for list_filter in list_filters:
+                if list_filter == filters.ColumnsListFilter:
+                    lookup_params = dict(request.GET.items())
+
+                    from django.contrib.admin.views.main import IGNORED_PARAMS
+                    for ignored in IGNORED_PARAMS:
+                        if ignored in lookup_params:
+                            del lookup_params[ignored]
+                    list_filter(request, lookup_params, self.model, self)
+                    break
+
+    def __apply_search_columns_filter(self, request):
+        if request.GET.has_key(filters.SearchColumnsListFilter.parameter_name_in)\
+                or request.GET.has_key(filters.SearchColumnsListFilter.parameter_name):
+
+            list_filters = self.get_list_filter(request)
+
+            for list_filter in list_filters:
+                if list_filter == filters.SearchColumnsListFilter:
+                    lookup_params = dict(request.GET.items())
+
+                    from django.contrib.admin.views.main import IGNORED_PARAMS
+                    for ignored in IGNORED_PARAMS:
+                        if ignored in lookup_params:
+                            del lookup_params[ignored]
+                    list_filter(request, lookup_params, self.model, self)
+                    break
+
+    def __code_to_html_readonly(self, obj, key, code_mode, get_value_func):
+        value = getattr(obj, key)
+        if isinstance(value, cx_Oracle.LOB):
+            value = value.read()
+        if get_value_func:
+            value = get_value_func(value)
+        return code_to_html_readonly(value, code_mode)
+
+    def __list_display_codes(self):
+        code_fields = {o.name: o for o in self.model._meta.fields if isinstance(o, CodeHighlightField)}
+        if code_fields.__len__() <= 0:
+            return
+
+        # Remove/Replace the code field
+        self.list_display_links = [o for o in self.list_display_links if not code_fields.has_key(o)]
+        self.list_display = [o + '_code' if code_fields.has_key(o) else o for o in self.list_display]
+
+        for k, v in code_fields.iteritems():
+            _code_mode = v.code_mode
+
+            # If a function to get the value was specified for this field
+            _get_value_func_name = self.list_display_get_value_func[k] if self.list_display_get_value_func.has_key(k) else None
+            _get_value_func = getattr(self, _get_value_func_name, None) if _get_value_func_name else None
+
+            def func(obj, key=k, code_mode=_code_mode, get_value_func=_get_value_func):
+                return self.__code_to_html_readonly(obj, key, code_mode, get_value_func)
+            func.short_description = v.verbose_name
+
+            setattr(self, k + '_code', func)
+
+    def get_actions(self, request):
+        actions = super(AdminViewModelBase, self).get_actions(request)
+        if actions.__len__() == 0:
+            return actions
+
+        if not self.has_delete_permission(request, None):
+            actions.pop('delete_selected')
+
+        return actions
+
+    def get_list_display(self, request):
+        self.__apply_columns_filter(request)
+
+        if self.user_list_display.has_key(request.user):
+            list_display = self.user_list_display[request.user]
+        else:
+            list_display = self.list_display
+
+        if list_display.__contains__('edit') and not self.has_change_permission(request, None):
+            list_display = list(list_display)
+            list_display.remove('edit')
+
+        return list_display
+
+    def get_search_fields(self, request):
+        self.__apply_search_columns_filter(request)
+
+        if self.user_search_display.has_key(request.user):
+            search_fields = self.user_search_display[request.user]
+        else:
+            search_fields = self.search_fields
+
+        return search_fields
+
+    def get_list_display_links(self, request, list_display):
+        list_display_links = super(AdminViewModelBase, self).get_list_display_links(request, list_display)
+
+        if list_display_links.__contains__('edit'):
+            list_display_links.remove('edit')
+
+        return list_display_links
+
+    def get_fields(self, request, obj=None):
+        fields = super(AdminViewModelBase, self).get_fields(request, obj)
+        return fields
+
+    def get_inlines(self):
+        module_path = self.__module__
+        admin_path = module_path[:module_path.index('.viewModels.')]
+
+        classes = []
+        indexed_classes = []
+        for k, v in self.inlines_to_load:
+            overrides = self.inlines_to_load_overrides.get(k, {})
+            overrides_exclude = overrides.get('exclude', False)
+            if overrides_exclude:
+                continue
+
+            module_name = '%s.inlines.%s' % (admin_path, v,)
+
+            try:
+                obj = get_attr(module_name, k)
+                if obj:
+                    overrides_index = overrides.get('index', -1)
+                    if overrides_index < 0:
+                        classes.append(obj)
+                    else:
+                        indexed_classes.append({'model': obj, 'index': overrides_index})
+            except:
+                # print 'Inline %s not found in %s' % (k, module_name)
+                pass
+
+        return [o['model']
+                for o in sorted(indexed_classes, key=lambda o: o['index'])] + classes
+
+    def get_model_perms(self, request):
+        perms = super(AdminViewModelBase, self).get_model_perms(request)
+        perms['read'] = self.has_read_permission(request)
+
+        return perms
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = super(AdminViewModelBase, self).get_readonly_fields(request, obj)
+
+        if (obj is None and self.has_add_permission(request))\
+                or self.has_change_permission_base(request, obj)\
+                or self.has_delete_permission(request, obj):
+            return fields
+
+        return fields + self.get_fields(request, obj)
+
+    def has_add_permission(self, request):
+        return self.enable_add and \
+               super(AdminViewModelBase, self).has_add_permission(request)
+
+    def has_change_permission_base(self, request, obj=None):
+        return self.enable_change and \
+               super(AdminViewModelBase, self).has_change_permission_base(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return self.enable_delete and \
+               super(AdminViewModelBase, self).has_delete_permission(request, obj)
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.log_insert(request.user.username)
+        else:
+            obj.log_update(request.user.username)
+
+        super(AdminViewModelBase, self).save_model(request, obj, form, change)
+
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+
+        # for obj in formset.deleted_objects:
+        #     obj.delete()
+
+        for instance in instances:
+            if hasattr(instance, 'row_insert_by') and not instance.row_insert_by:
+                instance.row_insert_by = request.user.username
+
+                if hasattr(instance, 'row_insert_date'):
+                    instance.row_insert_date = datetime.now()
+
+            if hasattr(instance, 'row_update_by'):
+                instance.row_update_by = request.user.username
+
+            if hasattr(instance, 'row_update_date'):
+                instance.row_update_date = datetime.now()
+
+            # instance.save()
+
+        super(AdminViewModelBase, self).save_formset(request, form, formset, change)
+
+    @classmethod
+    def edit(cls, obj):
+        url = '<a class = "button" href="%s"><i class="icon-pencil"></i></a>' % \
+              reverse('admin:%s_%s_change' % (obj._meta.app_label, obj._meta.model_name), args=[obj.pk])
+        return mark_safe(url)
+
+    class Media:
+        css = {
+            'all': ('core/css/multiselect.css',)
+        }
+        js = ('core/js/multiselect.js',)
+
+    @csrf_protect_m
+    @transaction.atomic
+    def changeform_view(self, request, object_id=None, form_url='', extra_context=None):
+        to_field = request.POST.get(TO_FIELD_VAR, request.GET.get(TO_FIELD_VAR))
+
+        if object_id:
+            obj = self.get_object(request, unquote(object_id), to_field)
+
+            if not self.has_change_permission_base(request, obj):
+                extra_context = {
+                    'show_save': False,
+                    'show_save_and_continue': False
+                }
+
+        return super(AdminViewModelBase, self).changeform_view(request, object_id, form_url, extra_context)
+
+
+class AdminTabularInlineViewModelBase(admin.TabularInline):
+    enable_add = True
+    enable_change = True
+    enable_delete = False
+    parent_instance = None
+
+    # empty_value_display = ''
+    # exclude = None
+    # fieldsets = None
+    # filter_horizontal = ()
+    # filter_vertical = ()
+    # formfield_overrides = {}
+    # ordering = None
+    # prepopulated_fields = {}
+    # radio_fields = {}
+    # raw_id_fields = ()
+    # readonly_fields = []
+    # short_description = ''
+    # show_full_result_count = True
+    view_on_site = False
+
+    can_delete = False
+    # classes = None
+    extra = 0
+    formset = BaseInlineFormSetLimit
+    # fk_name = None
+    list_per_page = 20
+    # max_num = None
+    # model = None
+    # min_num = None
+    # show_change_link = False
+    # template = None
+    # verbose_name = None
+    # verbose_name_plural = None
+
+    def __init__(self, model, admin_site):
+        super(AdminTabularInlineViewModelBase, self).__init__(model, admin_site)
+        override_extend(self)
+        if hasattr(self, 'on_override'):
+            self.on_override()
+
+    def _getset_parent_instance(self, value):
+        if value and value != self.parent_instance:
+            self.parent_instance = value
+
+        return self.parent_instance
+
+    def get_min_num(self, request, obj=None, **kwargs):
+        return -1 if not self.has_add_permission(request) else self.min_num
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = super(AdminTabularInlineViewModelBase, self).get_readonly_fields(request, obj)
+
+        if self.has_add_permission(request)\
+                or self.has_change_permission_base(request, obj)\
+                or self.has_delete_permission(request, obj):
+            return fields
+
+        return fields + self.get_fields(request, obj)
+
+    def has_add_permission(self, request):
+        return self.enable_add and \
+               super(AdminTabularInlineViewModelBase, self).has_add_permission(request)
+
+    def has_change_permission(self, request, obj=None):
+        obj = self._getset_parent_instance(obj)
+
+        return self.has_add_permission(request) or \
+               self.has_change_permission_base(request, obj) or \
+               self.has_read_permission(request, obj)
+
+    # Use this instead of has_change_permission
+    def has_change_permission_base(self, request, obj=None):
+        # Allow Change only when not in New/Add mode
+        # - obj is None when Parent is New/Add
+        # Note: obj will also be None when Parent and Child are the same model
+        return self.enable_change and \
+               (obj or self.model == self.parent_model) and \
+               super(AdminTabularInlineViewModelBase, self).has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        obj = self._getset_parent_instance(obj)
+
+        # Allow Delete only when not in New/Add mode
+        # - obj is None when Parent is New/Add
+        # Note: obj will also be None when Parent and Child are the same model
+        return self.enable_delete and \
+               (obj or self.model == self.parent_model) and \
+               super(AdminTabularInlineViewModelBase, self).has_delete_permission(request, obj)
+
+    def has_read_permission(self, request, obj=None):
+        opts = self.opts
+        # Allow Read only when not in New/Add mode
+        # - obj is None when Parent is New/Add
+        # Note: obj will also be None when Parent and Child are the same model
+        return (obj or self.model == self.parent_model) and \
+               has_permission(request, opts.app_label, opts.model_name, 'read')
+
+
+class AdminClientSideViewModelBase(ModelAdminBase):
+    add_form_template = 'admin/client_side/index.html'
+
+    def get_urls(self):
+        urlpatterns = super(AdminClientSideViewModelBase, self).get_urls()
+
+        # Change the default URL to be the Add Form
+        default_pattern = urlpatterns[0]
+        add_pattern = urlpatterns[1]
+
+        add_pattern._regex = default_pattern._regex
+        add_pattern.default_args = default_pattern.default_args
+        add_pattern.name = default_pattern.name
+
+        return [add_pattern]
+
+    def has_add_permission(self, request):
+        return super(AdminClientSideViewModelBase, self).has_add_permission(request)\
+               or self.has_change_permission_base(request)\
+               or self.has_delete_permission(request)\
+               or self.has_read_permission(request)
+
+    def has_change_permission(self, request, obj=None):
+        return self.has_add_permission(request)
+
+
+class AdminClientSideFormViewModelBase(AdminClientSideViewModelBase):
+    add_form_template = 'admin/client_side/form.html'
+
+    class Media:
+        js = (
+            'core/js/form.js',
+        )
