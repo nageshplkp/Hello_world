@@ -1,0 +1,8 @@
+<div class="multiselect" xmlns:choice.selected>
+    <div><select data-name="{{ field_name }}" data-title="{{ title|capfirst }}"></select></div>
+    <div class="options">
+    {% for choice in choices %}
+        <input type="checkbox" data-name="{{ choice.name }}" value="{{ choice.value }}"{{ choice.selected|yesno:' checked,' }}> {{ choice.display }}<br/>
+    {% endfor %}
+    </div>
+</div>
