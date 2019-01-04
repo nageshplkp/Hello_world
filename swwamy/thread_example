@@ -1,0 +1,53 @@
+import threading
+
+
+class myThread (threading.Thread):
+    def __init__(self, name, counter, x, y):
+        threading.Thread.__init__(self)
+        self.threadID = counter
+        self.name = name
+        self.counter = counter
+        self.x = x
+        self.y = y
+    def run(self):
+        print ("Starting " + self.name)
+        a = addition(self.name, self.x, self.y)
+        # print ("Starting " + self.name)
+        b = multiplication(self.name, self.x, self.y)
+        print ("==========",a, b)
+        print ("Exiting " + self.name)
+
+
+def addition(threadName, x, y):
+    print ("\n from addition \t ")
+    print ("(%s)-> addition is :%d " % (threadName, x+y ))
+    # print (x+y)
+    return x+y
+
+def multiplication(threadName, x, y):
+    print ("\n from multiplication\t")
+    # print (x*y)
+    print (" (%s)-> multiplication is :%d " % (threadName, x*y ))
+    return x*y
+
+# Create new threads
+thread1 = myThread("Thread-1", 1, 10, 20)
+thread2 = myThread("Thread-2", 2, 40, 50)
+
+threads = []
+
+# Start new Threads
+thread1.start()
+thread2.start()
+
+threads.append(thread1)
+threads.append(thread2)
+
+thread1.join()
+thread2.join()
+#
+# for t1 in threads:
+#     t1.join()
+
+
+print ("Exiting the Program!!!")
