@@ -18,7 +18,7 @@ def main_run(self):
 				sys.exit('Unexpected response {}. Review request object \nrequest_object:{}'.format(
 					response['request_status'], payload))
 		else:
-			n = 500
+			n = 500 # here we can pass maximum threshold value
       			chunk_total = list(divide_chunks(self.securities, n))
       			response_list = []
       			for total in chunk_total:
