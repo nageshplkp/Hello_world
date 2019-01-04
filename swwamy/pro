@@ -1,0 +1,306 @@
+import copy
+import csv
+import datetime
+import json
+import sys
+from contextlib import contextmanager
+from shutil import copy2
+
+import pandas as pd
+
+from core import util
+from core.rest.client import ClientException
+from etl.bbg_transport.dto import RequestDataItem, RequestItem, RequestOptionItem
+from etl.core.base.agent import AgentBase, ResultCode
+from etl.core.da_log import logger as log
+from etl.core.db import Db
+from etl.core.timed import timed
+from etl.core.util import uri_post, parse_args
+from etl.enum.cor_da.gen.bbg_program import BbgProgramEnum
+from etl.enum.cor_da.gen.bt_format import BtFormatEnum
+from etl.enum.cor_da.gen.bt_status import BtStatusEnum
+from etl.repo.fnd_cfdw.etl_bbg_source import EtlBbgSourceRepo
+from etl.repo.fnd_cfdw.etl_source_in_bbg_mnemonic import EtlSourceinBbgMnemonicRepo
+
+USAGE = [
+    'ETL BT SAPI Wrapper agent',
+    [['-o', '--outfile-path', '--outfile_path'],
+     {'help': 'Etl output file path', 'required': True}],
+    [['-c', '--requestor-code', '--requestor_code'],
+     {'help': 'User token for bt API calls', 'required': True}],
+    [['-n', '--bt-env-code', '--bt_env_code'],
+     {'help': 'Specify which BT environment (URL) to use', 'default': 'prod',
+      'choices': ['prod', 'beta', 'dev']}],
+    [['-v', '--vertical'],
+     {'help': 'Etl output file format(VERTICAL if specified),',
+      'action': 'store_true', 'default': False}],
+    [['-r', '--date-range', '--date_range'],
+     {'help': 'DATERANGE for a get_history request is required', 'type': str}],
+    [['-s', '--source-code', '--source_code'],
+     {'help': 'Etl source code for etl source', 'required': True}],
+    [['-i', '--interface-code', '--interface_code'],
+     {'help': 'Interface code for the request', 'required': True,
+      'choices': ['SAPI1']}],
+    [['-m', '--mnemonics'],
+     {'help': 'User provided mnemonics comma seperated', 'type': str}],
+    [['-a', '--add_mnemonics'],
+     {'help': 'Add user provided mnemonics to the source_code mnemonics', 'default': False}],
+    [['-b', '--bbg_queries'],
+     {'help': 'User provided securities comma seperated', 'type': str}],
+    [['-ab', '--add_bbg_queries'],
+     {'help': 'Add user provided inputs to the source_code securities', 'default': False}],
+    [['-mh', '--modify_header'],
+     {'help': ' Modify the header from Mnemonic to Security Header',
+      'action': 'store_true', 'default': False}]
+]
+
+
+class BbgTransportSyncClientRepo(object):
+    def __init__(self):
+        self._etl_source_in_bbg_mnemonic_repo = None
+        self._etl_bbg_source_repo = None
+
+    @property
+    def etl_source_in_bbg_mnemonic_repo(self):
+        if self._etl_source_in_bbg_mnemonic_repo is None:
+            self._etl_source_in_bbg_mnemonic_repo = EtlSourceinBbgMnemonicRepo()
+        return self._etl_source_in_bbg_mnemonic_repo
+
+    @property
+    def etl_bbg_source_repo(self):
+        if self._etl_bbg_source_repo is None:
+            self._etl_bbg_source_repo = EtlBbgSourceRepo()
+        return self._etl_bbg_source_repo
+
+
+class BbgTransportSyncClient(AgentBase):
+    def __init__(self, app_code, options=None):
+        super(BbgTransportSyncClient, self).__init__(app_code)
+        self.options = copy.deepcopy(
+            vars(options) if options is not None else dict())
+        self._repo_conn = None
+        self.source_code = self.options.get('source_code')
+        self.outfile_path = self.options.get('outfile_path')
+        self.requestor_code = self.options.get('requestor_code')
+        self.interface_code = self.options.get('interface_code')
+        self.mnemonics = self.options.get('mnemonics') if not self.options.get('mnemonics') \
+            else self.options.get('mnemonics').split(",")
+        self.add_mnemonics = self.options.get('add_mnemonics')
+        self.add_bbg_queries = self.options.get('add_bbg_queries')
+        self.modify_header = self.options.get('modify_header')
+        self.source_code_config = None
+        self.fmt = BtFormatEnum.VERTICAL.value if self.options['vertical'] else BtFormatEnum.HORIZONTAL.value
+        self.ret_code = ResultCode.SUCCESS_NO_ITEM_PROCESSED.value
+        self.securities = self.options.get('bbg_queries') if not self.options.get('bbg_queries') \
+            else self.options.get('bbg_queries').split(",")
+        self.success = BtStatusEnum.SUCCESS.value
+
+    @property
+    def repo_conn(self):
+        if self._repo_conn is None:
+            self._repo_conn = BbgTransportSyncClientRepo()
+        return self._repo_conn
+
+    def check_threshold(self, sec):
+        if len(self.securities) == 10000:
+            pass
+
+    @contextmanager
+    def run(self):
+        self.validate()
+        if not self.mnemonics:
+            self.mnemonics = self.get_mnemonic()
+        elif self.add_mnemonics:
+            self.mnemonics = self.mnemonics + self.get_mnemonic()
+        if self.securities:
+            payload = self.gen_request_object(self.securities, self.mnemonics)
+            response = self.post_to_bt(payload)
+            if response['request_status'] == self.success and response['data_file_path']:
+                dst_file_path = self.copy_file(response['data_file_path'])
+                if self.modify_header:
+                    self.change_header(dst_file_path)
+                self.ret_code = ResultCode.SUCCESS_ITEM_PROCESSED.value
+            else:
+                sys.exit('Unexpected response {}. Review request object \nrequest_object:{}'.format(
+                    response['request_status'], payload))
+        yield self.ret_code
+
+    def change_header(self, path):
+        df = pd.read_csv(path)
+        if 'SECURITY' not in df.columns:
+            if len(self.mnemonics) == 1 and self.mnemonics[0] in df.columns and self.mnemonics[0] == df.columns[0]:
+                df = df.rename(columns={self.mnemonics[0]: 'SECURITY'})
+        df.to_csv(path, index=False, quoting=csv.QUOTE_ALL)
+
+    @timed()
+    def validate(self):
+
+        log.info('Validating the arguments....')
+
+        if not self.source_code:
+            raise ValueError(
+                'Required --source-code cmd line argument was not found.')
+
+        if not self.outfile_path:
+            raise ValueError(
+                'Required --outfile_path cmd line argument was not found.')
+
+        if not self.requestor_code:
+            raise ValueError(
+                'Required --requestor-code cmd line argument was not found.')
+        if not self.interface_code:
+            raise ValueError(
+                'Required --requestor-code cmd line argument was not found.')
+        try:
+            self.source_code_config = self.get_config()
+            if self.source_code_config.bbg_program_code == BbgProgramEnum.GETHISTORY.value:
+                if not self.options['date_range']:
+                    raise Exception('For GETHISTORY Required --date-range cmd line argument was not found.')
+                if not self.validate_date_range():
+                    raise Exception('Check the format of daterange. ex: yyyymmdd|yyyymmdd')
+        except Exception as ex:
+            log.exception('Validate:' + str(ex))
+            raise
+
+        if not self.options['bbg_queries']:
+            if not self.source_code_config.db_connection_code:
+                raise Exception('DB_CONNECTION_CODE is missing  from ETL_BBG_SOURCE Table record')
+            self.get_securities()
+
+    def get_config(self):
+        """
+        Gets the config for a source_code.
+        :return: DB Object
+        """
+        try:
+            return self.repo_conn.etl_bbg_source_repo.get_by_source_code(self.source_code.strip())
+        except Exception as ex:
+            log.exception('While fetching data from ETL_BBG_SOURCE Table' + str(ex))
+            raise
+
+    def validate_date_range(self):
+        try:
+            start, _, end = self.options['date_range'].partition('|')
+            datetime.datetime.strptime(start, '%Y%m%d')
+            return True
+        except ValueError:
+            return False
+
+    def get_mnemonic(self):
+        """
+        Gets the list of Mnemonics.
+        :return: List of Mnemonics.
+        """
+        log.info('Fetching Mnemonics ...')
+        try:
+            rows = self.repo_conn.etl_source_in_bbg_mnemonic_repo.list_by_source_code_ordered(self.source_code.strip())
+            if len(rows) == 0:
+                raise Exception('Expected list of mnemonics found empty list.')
+            return [row.bbg_mnemonic_code for row in rows]
+        except Exception as ex:
+            log.exception('While fetching data from ETL_SOURCE_IN_BBG_MNEMONIC Table' + str(ex))
+            raise
+
+    def get_securities(self):
+        """
+        Using the raw query gets the securities from the database.
+        """
+        try:
+            db = Db(self.source_code_config.db_connection_code, 'oracle')
+            if not self.source_code_config.security_sql:
+                raise Exception(' Missing SQL statement from ETL_BBG_SOURCE Table record.')
+            rows = db.session.execute(self.source_code_config.security_sql)
+            if not len(rows.keys()) == 1:
+                raise Exception(
+                    'Invalid number of columns. Check the SQL statement should return just one column with securities')
+            if self.add_bbg_queries and self.securities:
+                self.securities = [row[0] for row in rows] + self.securities
+            else:
+                self.securities = [row[0] for row in rows]
+        except Exception as ex:
+            log.exception('While getting the Securities' + str(ex))
+            raise
+
+    def _get_default_headers(self):
+        return {
+            'PROGRAMFLAG': self.source_code_config.program_flag,
+            'USERNUMBER': self.source_code_config.user_number,
+            'FIRMNAME': self.source_code_config.firm_code,
+            'COMPRESS': self.source_code_config.compress_code,
+            'PROGRAMNAME': self.source_code_config.bbg_program_code
+        }
+
+    def _get_headers(self):
+        headers = self._get_default_headers()
+        if self.source_code_config.bbg_program_code == BbgProgramEnum.GETHISTORY.value:
+            headers['DATERANGE'] = self.options['date_range'].strip()
+        return headers
+
+    def gen_request_object(self, securities, mnemonics):
+        """
+        Creates request Object.
+        :param securities:(Type) List
+        :param mnemonics: (Type)List
+        :return: Json
+        """
+        log.info('Preparing the Request Object')
+        data_items = [RequestDataItem(bbg_query=security)
+                      for security in list(set(securities))]
+        headers = self._get_headers()
+        fields = list(set(mnemonics))
+        request_options = [RequestOptionItem(option_name=key, option_value=headers[key])
+                           for key in headers]
+        description = json.dumps(dict(source_code=self.options['source_code'], etl_audit_id=self.config.etl_audit_id,
+                                      format=self.fmt))
+        request = RequestItem(request_description=description,
+                              requestor_code=self.requestor_code.strip(),
+                              program_code=self.source_code_config.bbg_program_code,
+                              interface_code=self.interface_code,
+                              response_format_code=self.fmt,
+                              request_data_items=data_items,
+                              request_options=request_options,
+                              request_fields=fields)
+        log.info('Converting the Request Object to json format')
+        return json.dumps(request.to_json())
+
+    def post_to_bt(self, payload):
+        """
+        Posts the request Object to BT
+        :param payload: Json
+        :return: (type) Dictionary
+        """
+        try:
+            bt_url = self.config.bt_fetch_endpoint.replace('prod', self.options['bt_env_code'])
+            log.info('Submitting requests to Bloomberg Transport')
+            log.info('post: %s \r\npayload:\t%s', bt_url, payload)
+            response = uri_post(bt_url, payload)
+            log.info('response: %s', response)
+            return response
+        except ClientException as err:
+            raise Exception('Error occurred while posting to BT:' + err.detail_json.get('msg'))
+
+    def copy_file(self, src):
+        """
+        Copy the response csv to outfile folder.
+        :param src:type(str)
+        """
+        try:
+            dst = self.options['outfile_path']
+            # Use: For local testing
+            if util.isWindows():
+                env_path = {'dev': '//nasclusdev', 'beta': '//nasclusdev', 'prod': '//nasprodpm4'}
+                src = src.replace('/appl', env_path[self.options['bt_env_code']])
+                dst = dst.replace('/appl', env_path[self.config.env])
+            log.info("Copying  %s to %s", src, dst)
+            copy2(src, dst)
+            return dst
+        except Exception as ex:
+            log.exception('Error occurrence while Copying the file.' + ex.message)
+            raise
+
+
+if __name__ == '__main__':
+    args = parse_args(*USAGE)
+    with BbgTransportSyncClient(options=args, app_code='BBG_BT_SYNC_WRAPPER').run() as x:
+        log.info("Agent completed successfully.")
+        sys.exit(x)
