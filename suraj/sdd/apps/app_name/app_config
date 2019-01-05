@@ -1,0 +1,8 @@
+from __future__ import unicode_literals
+from django.apps import AppConfig
+import core.helpers
+
+
+class AppConfig(AppConfig):
+    name = core.helpers.get_folder_name(__file__)
+    verbose_name = core.helpers.get_folder_name(__file__).replace('_', ' ').title().upper()
