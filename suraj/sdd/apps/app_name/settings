@@ -1,0 +1,5 @@
+
+database = {
+    'conn_variable': 'ORACOR_DBP',
+    'engine': 'Oracle'
+}
