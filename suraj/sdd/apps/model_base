@@ -1,0 +1,12 @@
+# ======================================================================
+# This is the application wide configuration for the Models
+# ======================================================================
+from __future__ import unicode_literals
+from core.django.models import *
+
+
+class ModelBase(ModelBase):
+
+    class Meta:
+        abstract = True
+ 
