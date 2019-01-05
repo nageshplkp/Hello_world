@@ -1,0 +1,23 @@
+# ======================================================================
+# This is the application wide configuration for the AdminViewModels
+# ======================================================================
+from __future__ import unicode_literals
+from core.django.admin import *
+
+
+class AdminViewModelBase(AdminViewModelBase):
+    # enable_add = False
+    # enable_change = False
+    # enable_delete = True
+    pass
+
+
+class AdminTabularInlineViewModelBase(AdminTabularInlineViewModelBase):
+    # enable_add = False
+    # enable_change = False
+    # enable_delete = True
+    pass
+
+
+class AdminClientSideFormViewModelBase(AdminClientSideFormViewModelBase):
+    pass
