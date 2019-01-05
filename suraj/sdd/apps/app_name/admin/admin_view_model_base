@@ -1,0 +1,27 @@
+# ======================================================================
+# This is the app specific configuration for the AdminViewModels
+# ======================================================================
+from __future__ import unicode_literals
+from apps.admin_view_model_base import *
+from ..app_config import AppConfig
+
+
+class AdminViewModelBase(AdminViewModelBase):
+    enable_add = False
+    enable_change = False
+    # enable_delete = True
+    pass
+
+
+class AdminTabularInlineViewModelBase(AdminTabularInlineViewModelBase):
+    enable_add = False
+    enable_change = False
+    # enable_delete = True
+    pass
+
+
+class AdminClientSideFormViewModelBase(AdminClientSideFormViewModelBase):
+    class Media:
+        js = (
+            '%s/js/form.js' % AppConfig.name,
+        )
