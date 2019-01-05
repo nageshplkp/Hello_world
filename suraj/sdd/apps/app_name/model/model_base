@@ -1,0 +1,13 @@
+# ======================================================================
+# This is the app specific configuration for the Models
+# ======================================================================
+from __future__ import unicode_literals
+from apps.model_base import *
+
+DEFAULT_ON_DELETE_ACTION = PROTECT
+
+
+class ModelBase(ModelBase):
+
+    class Meta:
+        abstract = True
