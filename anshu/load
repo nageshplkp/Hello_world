@@ -1,0 +1,234 @@
+import argparse
+import logging
+import os
+import sys
+from contextlib import contextmanager
+from datetime import datetime
+import pandas as pd
+from sqlalchemy import text
+
+from da_common import da_sp_wrapper
+from etl.core.base.agent import AgentBase
+from etl.core.da_log import logger as log
+from etl.repo.fnd_cfdw import EtlFileRepo
+from etl.repo.pim_da.dats_series import DatsSeriesRepo
+from etl.repo.pim_da.stgp_dats_series_value import StgpDatsSeriesValueRepo
+from etl.repo.pim_da.ups_dats_series_value import UpsDatsSeriesValueRepo
+
+
+class LoaderAgentRepo:
+    def __init__(self):
+        self._etl_file_repo = None
+        self._dats_series_repo = None
+        self._stgp_dats_series_value_repo = None
+        self._ups_dats_series_value_repo = None
+
+    @property
+    def dats_series_repo_(self):
+        if self._dats_series_repo is None:
+            self._dats_series_repo = DatsSeriesRepo()
+        return self._dats_series_repo
+
+    @property
+    def etl_file_repo_(self):
+        if self._etl_file_repo is None:
+            self._etl_file_repo = EtlFileRepo()
+        return self._etl_file_repo
+
+    @property
+    def stgp_dats_series_value_repo_(self):
+        if self._stgp_dats_series_value_repo is None:
+            self._stgp_dats_series_value_repo = StgpDatsSeriesValueRepo()
+        return self._stgp_dats_series_value_repo
+
+    @property
+    def ups_dats_series_value_repo_(self):
+        if self._ups_dats_series_value_repo is None:
+            self._ups_dats_series_value_repo = UpsDatsSeriesValueRepo()
+        return self._ups_dats_series_value_repo
+
+
+class LoaderAgent(AgentBase):
+    def __init__(self):
+        super(LoaderAgent, self).__init__(app_code='etl-dats-bbg_agent_ld')
+        self.repo = None
+        self.ret_code = self.result_code.SUCCESS_NO_ITEM_PROCESSED.value
+        self.audit_id = self.config.etl_audit_id
+
+    def validate(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get_files():
+        """
+        Gets files from ETL_FILE table.
+        :return: List of Db Objects
+        """
+        try:
+            log.info('Fetching files from ETL_FILE_TABLE..')
+            repo = EtlFileRepo()
+            model = repo.model
+            data = repo.query.filter(model.file_source == 'DATS_BBG_IN',
+                                     model.is_etl_done == 0,
+                                     model.is_ftp_done == 1).all()
+            return data
+        except Exception as ex:
+            logging.exception('Error occured while fetching files from ETL_FILE_TABLE' + str(ex))
+            raise
+
+    @staticmethod
+    def _get_unique_rows(df):
+        return df.drop_duplicates(subset='REQUESTOR_TAG', keep="first")
+
+    def get_rows(self, csv_file):
+        """
+        :param csv_file: String - csv file location
+        :return: List
+        """
+        df = pd.read_csv(csv_file)
+        df = df.loc[df['ROW_STATUS'] == 0]
+        df = self._get_unique_rows(df)
+        return [row for index, row in df.iterrows()]
+
+    def get_dataframe(self, csv_file):
+        """
+        :param csv_file: String - csv file location
+        :return: List
+        """
+        df = pd.read_csv(csv_file)
+        df = df.loc[df['ROW_STATUS'] == 0]
+        df = self._get_unique_rows(df)
+        return df
+
+    @staticmethod
+    def get_csv_loc(obj):
+        """
+        :param obj: DB Object
+        :return: String
+        """
+        log.info('Getting csv file location...')
+        csv_file = os.path.join(obj.local_file_folder, obj.local_file_name)
+        return csv_file
+
+    @staticmethod
+    def get_series_attr(dats_code):
+        """
+        :param dats_code: String
+        :return: List of Objects
+        """
+        try:
+            log.info('Fetching data from the DATS_SERIES Table')
+            repo = DatsSeriesRepo()
+            model = repo.model
+            data = repo.query.filter(model.dats_code.in_(dats_code)).all()
+            return data
+        except Exception as ex:
+            logging.exception('Error occured while fetching data  from DATS_SERIES TABLE' + str(ex))
+            raise
+
+    def _insert_stgp_dats_series_value(self, csv_row, dats_series, obj):
+        try:
+            log.info('Update or Insert  STGP_DATS_SERIES_VALUE table..')
+            self.repo.stgp_dats_series_value_repo_.instance.model(etl_file_id=obj.etl_file_id,
+                                                                  etl_audit_job_id=self.audit_id,
+                                                                  etl_source_code=dats_series.etl_source_code,
+                                                                  source_provider_code=dats_series.source_provider_code,
+                                                                  dats_code=dats_series.dats_code,
+                                                                  asof_date=datetime.strptime(csv_row['ASOF_DATE'],
+                                                                                              "%m/%d/%Y"),
+                                                                  dats_value=csv_row['VALUE'])
+            self.repo.stgp_dats_series_value_repo_.save()
+        except Exception as ex:
+            logging.exception(str(ex))
+            raise
+
+    def _insert_ups_dats_series_value(self, csv_row, dats_series):
+        try:
+            log.info('Update or Insert  UPS_DATS_SERIES_VALUE table..')
+            self.repo.ups_dats_series_value_repo_.instance.model(etl_audit_job_id=self.audit_id,
+                                                                 dats_id=dats_series.dats_id,
+                                                                 asof_date_key=int(
+                                                                     datetime.strptime(csv_row['ASOF_DATE'],
+                                                                                       "%m/%d/%Y").strftime("%Y%m%d")),
+                                                                 asof_time_id=0,
+                                                                 dats_value_str=str(csv_row['VALUE']),
+                                                                 dats_value_str_hash=text(
+                                                                     "ORA_HASH({val})".format(
+                                                                         val=str(csv_row['VALUE']))),
+                                                                 dats_value_num=int(
+                                                                     csv_row['VALUE']),
+                                                                 row_is_active=0
+                                                                 )
+            self.repo.ups_dats_series_value_repo_.save()
+        except Exception as ex:
+            logging.exception(str(ex))
+            raise
+
+    def insert_value(self, csv_row, dats_series, obj):
+        """
+        :param csv_row: Dataframe Object
+        :param dats_series: DB Object
+        :param obj: DB Object
+        """
+        self._insert_stgp_dats_series_value(csv_row, dats_series, obj)
+        self._insert_ups_dats_series_value(csv_row, dats_series)
+
+    def _get_args(self):
+        args = argparse.Namespace(database='ORAPIM', etl_audit_id=self.audit_id,
+                                  in_param=['i_audit_id:{0}:Numeric'.format(self.audit_id),
+                                            'i_target_table_name:DATS_SERIES_VALUE:String',
+                                            'i_source_table_name:UPS_DATS_SERIES_VALUE:String'],
+                                  out_param=['o_insert_count:0:Integer', 'o_update_count:0:Integer',
+                                             'o_delete_count:0:Integer'], scalar=False, schema='da_own',
+                                  stored_proc='da_own.sp_etl_ups_merge', timeout=300, vendor='oracle')
+        return args
+
+    def _call_sp_etl_ups_merge(self):
+        da_sp_wrapper.get_arguments = self._get_args
+        da_sp_wrapper.main()
+        return
+
+    @contextmanager
+    def run(self):
+        file_objs = self.get_files()
+        if file_objs:
+            for obj in file_objs:
+                csv_file = self.get_csv_loc(obj)
+                rows = self.get_rows(csv_file)
+                for row in rows:
+                    if row['ROW_STATUS'] != 0:
+                        continue
+                    data = self.get_series_attr(row['REQUESTOR_TAG'])
+                    self.insert_value(row, data, obj)
+            self._call_sp_etl_ups_merge()
+            self.ret_code = self.result_code.SUCCESS_ITEM_PROCESSED
+        yield self.ret_code
+
+    @contextmanager
+    def run_1(self):
+        file_objs = self.get_files()
+        if file_objs:
+            for obj in file_objs:
+                csv_file = self.get_csv_loc(obj)
+                df = self.get_dataframe(csv_file)
+                data = self.get_series_attr(list(df['REQUESTOR_TAG']))
+                # self.insert_value(row, data, obj)
+            self._call_sp_etl_ups_merge()
+            self.ret_code = self.result_code.SUCCESS_ITEM_PROCESSED
+        yield self.ret_code
+
+
+if __name__ == '__main__':
+    with LoaderAgent().run() as x:
+        logging.info('Agent  execution complete.')
+        sys.exit(x)
+
+
+
+
+### bulk insert 
+    def save_bulk(self, data):
+        self.db.session.bulk_insert_mappings(self.model, data)
+        self.db.session.commit()
+        
+  data here is list of dictionaries.      
