@@ -1,0 +1,1 @@
+sqlalchemy.exc.InvalidRequestError: SQL expression, column, or mapped entity expected - got '<etl.repo.pim_da.dats_series.DatsSeriesRepo object at 0x07328B30>'
